@@ -1,14 +1,22 @@
 import logging
 import re
 from datetime import datetime
+from typing import List, Optional
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app import texts
-from app.keyboards import back_to_menu_kb, history_details_kb, history_list_kb, main_menu_kb
-from app.states import TemplateStates
+from app.keyboards import (
+    back_cancel_kb,
+    back_to_menu_kb,
+    edit_confirm_kb,
+    history_action_kb,
+    history_list_kb,
+    main_menu_kb,
+)
+from app.states import EditWorkoutStates, TemplateStates
 
 log = logging.getLogger("handlers.history")
 router = Router()
@@ -30,30 +38,43 @@ def _format_rest_minutes(rest_seconds: int | float | None) -> str:
     return f"{value:g}"
 
 
-def _build_title_from_item(item: dict) -> str:
-    exercise_name = str(item.get("exercise_name") or "Тренировка")
-    weight = float(item.get("weight") or 0)
-    reps = int(item.get("reps") or 0)
-    sets_count = int(item.get("sets_count") or 0)
+def _extract_pattern_values(raw: str) -> Optional[List[float]]:
+    tokens = re.findall(r"\d+(?:[\.,]\d+)?", (raw or "").strip())
+    if not tokens:
+        return None
+    return [float(token.replace(",", ".")) for token in tokens]
+
+
+def _status_text(status: str | None) -> str:
+    return texts.STATUS_DONE if status == "done" else texts.STATUS_PLANNED
+
+
+async def _render_card(message: Message, state: FSMContext, db, user_id: int, workout_id: int):
+    header = db.get_workout_header(user_id=user_id, workout_id=workout_id)
+    item = db.get_workout_single_item(user_id=user_id, workout_id=workout_id)
+    if not header:
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+        return
+
+    item = item or {}
+    lines = [f"<b>{texts.HISTORY_CARD_TITLE}</b>"]
+    lines.append(
+        f"<b>{_parse_date(header.get('workout_date'))}</b> — <b>{header.get('title') or 'Тренировка'}</b> (#{header.get('id')})"
+    )
+    lines.append(f"Статус: {_status_text(header.get('status'))}")
+    lines.append(f"Упражнение: {item.get('exercise_name') or 'Упражнение'}")
+    lines.append(f"Вес: {float(item.get('weight') or 0):g} кг")
+    lines.append(f"Повторы: {int(item.get('reps') or 0)}")
+    lines.append(f"Подходы: {int(item.get('sets_count') or 0)}")
+    lines.append(f"Отдых: {_format_rest_minutes(item.get('rest_seconds'))} мин")
+
     rest_pattern = item.get("rest_pattern")
-
-    if weight == 0:
-        title = f"{exercise_name} · {reps}×{sets_count}"
-    else:
-        title = f"{exercise_name} · {weight:g}кг×{reps}×{sets_count}"
-
     if isinstance(rest_pattern, list) and rest_pattern:
-        title += " · rest pattern"
-    else:
-        title += f" · rest {_format_rest_minutes(item.get('rest_seconds'))}м"
-    return title[:80]
+        pattern_minutes = ", ".join(f"{(float(s or 0) / 60):g}" for s in rest_pattern)
+        lines.append(f"Отдых по подходам: {pattern_minutes}")
 
-
-def _resolved_title(title: str | None, item: dict | None) -> str:
-    raw = (title or "").strip()
-    if not raw or raw.lower() == "quick":
-        return _build_title_from_item(item or {})
-    return raw[:80]
+    await state.update_data(selected_workout_id=workout_id, mode=header.get("mode"))
+    await message.answer("\n".join(lines), reply_markup=history_action_kb(header.get("status")))
 
 
 @router.message(F.text == "📒 История")
@@ -63,19 +84,12 @@ async def open_history(message: Message, state: FSMContext, db):
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         workouts = db.list_workouts(user_id=int(user["id"]), limit=10)
 
-        display_workouts: list[dict] = []
-        for workout in workouts:
-            details = db.get_workout_details(workout_id=int(workout["id"]), user_id=int(user["id"]))
-            item = (details or {}).get("item") or {}
-            display_workouts.append({**workout, "title": _resolved_title(workout.get("title"), item)})
-
-        await state.update_data(history_workouts=display_workouts)
-
-        if not display_workouts:
+        if not workouts:
             await message.answer(texts.HISTORY_EMPTY, reply_markup=main_menu_kb())
             return
 
-        await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(display_workouts))
+        await state.update_data(history_workouts=workouts)
+        await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(workouts))
     except Exception:
         log.exception("open_history failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -94,31 +108,209 @@ async def open_workout_details(message: Message, state: FSMContext, db):
 
         workout_id = int(match.group(1))
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        details = db.get_workout_details(workout_id=workout_id, user_id=int(user["id"]))
-        if not details:
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=workout_id)
+    except Exception:
+        log.exception("open_workout_details failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "🔁 Повторить")
+async def repeat_from_history(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        selected_workout_id = data.get("selected_workout_id")
+        if not selected_workout_id:
+            await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.clone_workout_as_new(user_id=int(user["id"]), workout_id=int(selected_workout_id))
+        await message.answer(texts.REPEAT_DONE.format(old_id=selected_workout_id), reply_markup=main_menu_kb())
+    except Exception:
+        log.exception("repeat_from_history failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text.in_({"✅ Отметить выполненной", "☑️ Снять отметку"}))
+async def toggle_workout_status(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        workout_id = data.get("selected_workout_id")
+        if not workout_id:
+            await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
+            return
+
+        new_status = "done" if message.text == "✅ Отметить выполненной" else "planned"
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.update_workout_status(user_id=int(user["id"]), workout_id=int(workout_id), status=new_status)
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
+    except Exception:
+        log.exception("toggle_workout_status failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "✏️ Исправить")
+async def start_edit_workout(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        workout_id = data.get("selected_workout_id")
+        if not workout_id:
+            await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        header = db.get_workout_header(user_id=int(user["id"]), workout_id=int(workout_id))
+        if not header:
             await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
             return
 
-        workout = details.get("workout") or {}
-        item = details.get("item") or {}
-        title = _resolved_title(workout.get("title"), item)
-
-        lines = [f"<b>{_parse_date(workout.get('workout_date'))}</b> — <b>{title}</b>"]
-        lines.append(f"Упражнение: {item.get('exercise_name') or 'Упражнение'}")
-        lines.append(f"Вес: {float(item.get('weight') or 0):g} кг")
-        lines.append(f"Повторы: {int(item.get('reps') or 0)}")
-        lines.append(f"Подходы: {int(item.get('sets_count') or 0)}")
-        lines.append(f"Отдых: {_format_rest_minutes(item.get('rest_seconds'))} мин")
-
-        rest_pattern = item.get("rest_pattern")
-        if isinstance(rest_pattern, list) and rest_pattern:
-            pattern_minutes = ", ".join(f"{(float(s or 0) / 60):g}" for s in rest_pattern)
-            lines.append(f"Отдых по подходам: {pattern_minutes}")
-
-        await state.update_data(selected_workout_id=workout_id)
-        await message.answer("\n".join(lines), reply_markup=history_details_kb())
+        await state.update_data(mode=header.get("mode"))
+        await state.set_state(EditWorkoutStates.waiting_weight)
+        await message.answer(texts.EDIT_START, reply_markup=back_cancel_kb())
     except Exception:
-        log.exception("open_workout_details failed")
+        log.exception("start_edit_workout failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(EditWorkoutStates.waiting_weight)
+async def edit_waiting_weight(message: Message, state: FSMContext):
+    try:
+        weight = float((message.text or "").strip().replace(",", "."))
+        if weight < 0 or weight > 1000:
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+        await state.update_data(new_weight=weight)
+        await state.set_state(EditWorkoutStates.waiting_reps)
+        await message.answer(texts.EDIT_ENTER_REPS, reply_markup=back_cancel_kb())
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
+    except Exception:
+        log.exception("edit_waiting_weight failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(EditWorkoutStates.waiting_reps)
+async def edit_waiting_reps(message: Message, state: FSMContext):
+    try:
+        reps = int((message.text or "").strip())
+        if reps <= 0 or reps > 500:
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+        await state.update_data(new_reps=reps)
+        await state.set_state(EditWorkoutStates.waiting_sets)
+        await message.answer(texts.EDIT_ENTER_SETS, reply_markup=back_cancel_kb())
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
+    except Exception:
+        log.exception("edit_waiting_reps failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(EditWorkoutStates.waiting_sets)
+async def edit_waiting_sets(message: Message, state: FSMContext):
+    try:
+        sets_count = int((message.text or "").strip())
+        if sets_count <= 0 or sets_count > 50:
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+        await state.update_data(new_sets_count=sets_count)
+        data = await state.get_data()
+        if data.get("mode") == "pattern":
+            await state.set_state(EditWorkoutStates.waiting_rest_pattern)
+            await message.answer(texts.EDIT_ENTER_REST_PATTERN, reply_markup=back_cancel_kb())
+        else:
+            await state.set_state(EditWorkoutStates.waiting_rest)
+            await message.answer(texts.EDIT_ENTER_REST_SINGLE, reply_markup=back_cancel_kb())
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
+    except Exception:
+        log.exception("edit_waiting_sets failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(EditWorkoutStates.waiting_rest)
+async def edit_waiting_rest(message: Message, state: FSMContext):
+    try:
+        minutes = float((message.text or "").strip().replace(",", "."))
+        if minutes < 0 or minutes > 30:
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+        await state.update_data(new_rest_seconds=int(round(minutes * 60)), new_rest_pattern=None)
+        await _show_edit_confirm(message, state)
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
+    except Exception:
+        log.exception("edit_waiting_rest failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(EditWorkoutStates.waiting_rest_pattern)
+async def edit_waiting_rest_pattern(message: Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        sets_count = int(data.get("new_sets_count") or 1)
+        expected = max(sets_count - 1, 0)
+        values = _extract_pattern_values(message.text or "")
+        if values is None or len(values) != expected:
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+        if any(v < 0 or v > 30 for v in values):
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+
+        rest_pattern = [int(round(v * 60)) for v in values]
+        avg_rest = int(round(sum(rest_pattern) / len(rest_pattern))) if rest_pattern else 0
+        await state.update_data(new_rest_seconds=avg_rest, new_rest_pattern=rest_pattern)
+        await _show_edit_confirm(message, state)
+    except Exception:
+        log.exception("edit_waiting_rest_pattern failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+async def _show_edit_confirm(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(EditWorkoutStates.confirm)
+
+    lines = [
+        f"Вес: {float(data.get('new_weight') or 0):g} кг",
+        f"Повторы: {int(data.get('new_reps') or 0)}",
+        f"Подходы: {int(data.get('new_sets_count') or 0)}",
+    ]
+    if data.get("mode") == "pattern":
+        pattern = data.get("new_rest_pattern") or []
+        pattern_minutes = ", ".join(f"{(float(s) / 60):g}" for s in pattern) if pattern else "—"
+        lines.append(f"Отдых по подходам: {pattern_minutes}")
+    else:
+        lines.append(f"Отдых: {_format_rest_minutes(data.get('new_rest_seconds'))} мин")
+
+    await message.answer(f"{texts.EDIT_CONFIRM}\n\n" + "\n".join(lines), reply_markup=edit_confirm_kb())
+
+
+@router.message(EditWorkoutStates.confirm, F.text == "✅ Сохранить правки")
+async def save_edit_workout(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        workout_id = data.get("selected_workout_id")
+        if not workout_id:
+            await state.clear()
+            await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.update_workout_entry(
+            user_id=int(user["id"]),
+            workout_id=int(workout_id),
+            new_weight=float(data.get("new_weight") or 0),
+            new_reps=int(data.get("new_reps") or 0),
+            new_sets_count=int(data.get("new_sets_count") or 0),
+            new_rest_seconds=int(data.get("new_rest_seconds") or 0),
+            new_rest_pattern=data.get("new_rest_pattern") if isinstance(data.get("new_rest_pattern"), list) else None,
+        )
+        await state.set_state(None)
+        await message.answer(texts.EDIT_SAVED)
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
+    except Exception:
+        log.exception("save_edit_workout failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
@@ -165,6 +357,10 @@ async def save_template_name(message: Message, state: FSMContext, db):
 @router.message(F.text == "↩️ Назад")
 async def history_back(message: Message, state: FSMContext):
     try:
+        current_state = await state.get_state()
+        if current_state and current_state.startswith("EditWorkoutStates"):
+            await state.set_state(None)
+
         data = await state.get_data()
         workouts = data.get("history_workouts") or []
         if workouts:

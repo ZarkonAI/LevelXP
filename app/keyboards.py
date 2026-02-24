@@ -116,12 +116,38 @@ def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def history_action_kb(status: str | None) -> ReplyKeyboardMarkup:
+    status_button = "✅ Отметить выполненной" if status != "done" else "☑️ Снять отметку"
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔁 Повторить")],
+            [KeyboardButton(text="✏️ Исправить")],
+            [KeyboardButton(text=status_button)],
+            [KeyboardButton(text="💾 Сохранить как шаблон")],
+            [KeyboardButton(text="↩️ Назад")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def history_details_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="💾 Сохранить как шаблон")],
             [KeyboardButton(text="↩️ Назад")],
             [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def edit_confirm_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Сохранить правки")],
+            [KeyboardButton(text="❌ Отмена")],
+            [KeyboardButton(text="↩️ Назад")],
         ],
         resize_keyboard=True,
     )
