@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import Client, create_client
@@ -94,13 +95,52 @@ class Db:
     def get_progress(self, user_id: int) -> Dict[str, Any]:
         res = (
             self.client.table("progress")
-            .select("user_id,level,xp,stats,muscles,updated_at")
+            .select("user_id,level,xp,stats,muscles,workouts_count,total_sets,updated_at")
             .eq("user_id", user_id)
             .limit(1)
             .execute()
         )
         if not res.data:
             raise RuntimeError("Progress not found")
+        return res.data[0]
+
+    def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
+        res = (
+            self.client.table("exercises")
+            .select("id,name,primary_muscle,muscle_map")
+            .eq("id", exercise_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            raise RuntimeError("Exercise not found")
+        return res.data[0]
+
+    def update_progress(
+        self,
+        user_id: int,
+        level: int,
+        xp: int,
+        muscles: Dict[str, int],
+        workouts_count: Optional[int] = None,
+        total_sets: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        base_payload: Dict[str, Any] = {
+            "level": level,
+            "xp": xp,
+            "muscles": muscles,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        payload = dict(base_payload)
+        if workouts_count is not None:
+            payload["workouts_count"] = workouts_count
+        if total_sets is not None:
+            payload["total_sets"] = total_sets
+
+        res = self.client.table("progress").update(payload).eq("user_id", user_id).execute()
+        if not res.data:
+            raise RuntimeError("update_progress failed")
         return res.data[0]
 
     def list_exercises(self, limit: int = 12) -> List[Dict[str, Any]]:
