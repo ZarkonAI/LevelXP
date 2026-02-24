@@ -2,6 +2,7 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 from app.config import get_settings
 from app.logging_setup import setup_logging
@@ -14,7 +15,10 @@ async def main():
     settings = get_settings()
     setup_logging(settings.log_level)
 
-    bot = Bot(token=settings.bot_token, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=settings.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher()
 
     db = Db(settings.supabase_url, settings.supabase_service_key)
