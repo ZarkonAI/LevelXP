@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 
@@ -7,6 +9,15 @@ def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardBut
         chunk = buttons[idx : idx + row_width]
         rows.append([KeyboardButton(text=text) for text in chunk])
     return rows
+
+
+def _format_date(raw_date: str | None) -> str:
+    if not raw_date:
+        return "--.--"
+    try:
+        return datetime.fromisoformat(raw_date).strftime("%d.%m")
+    except (TypeError, ValueError):
+        return str(raw_date)
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
@@ -92,3 +103,54 @@ def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
     keyboard.append([KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")])
 
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for workout in workouts:
+        wid = workout.get("id")
+        title = workout.get("title") or "Workout"
+        workout_date = _format_date(workout.get("workout_date"))
+        rows.append([KeyboardButton(text=f"🗓 {workout_date} · {title} (#{wid})")])
+    rows.append([KeyboardButton(text="↩️ В меню")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def history_details_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="💾 Сохранить как шаблон")],
+            [KeyboardButton(text="↩️ Назад")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def templates_list_kb(templates: list[dict]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for template in templates:
+        rows.append([KeyboardButton(text=f"🔁 {template.get('name', 'Template')} (#{template.get('id')})")])
+    rows.append([KeyboardButton(text="↩️ В меню")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def templates_confirm_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Повторить")],
+            [KeyboardButton(text="↩️ Назад")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def back_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="↩️ Назад")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )

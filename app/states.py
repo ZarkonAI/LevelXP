@@ -12,3 +12,7 @@ class QuickLogStates(StatesGroup):
     enter_rest_single = State()
     enter_rest_pattern = State()
     confirm = State()
+
+
+class TemplateStates(StatesGroup):
+    waiting_name = State()
