@@ -23,11 +23,12 @@ async def character(message: Message, db):
         muscles = p.get("muscles") or {}
         lvl = p.get("level", 1)
         xp = p.get("xp", 0)
+        xp_to_next = 100 + int(lvl) * 25
 
         text = (
             "<b>Персонаж</b>\n"
             f"Уровень: <b>{lvl}</b>\n"
-            f"XP: <b>{xp}</b>\n\n"
+            f"XP: <b>{xp}/{xp_to_next}</b>\n\n"
             "<b>Мышцы</b>\n"
             f"🦵 Ноги: {muscles.get('legs', 0)}\n"
             f"🧱 Спина: {muscles.get('back', 0)}\n"
@@ -41,7 +42,7 @@ async def character(message: Message, db):
         log.exception("character failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
-@router.message(F.text.in_({"🏋️ Тренировка", "📒 История", "🔁 Шаблоны", "⚙️ Настройки"}))
+@router.message(F.text.in_({"📒 История", "🔁 Шаблоны", "⚙️ Настройки"}))
 async def stub_sections(message: Message):
     await message.answer(
         "Этот раздел будет в следующих шагах спринта (D2–D4). Сейчас готовим каркас и БД.",
