@@ -30,19 +30,52 @@ def _format_rest_minutes(rest_seconds: int | float | None) -> str:
     return f"{value:g}"
 
 
+def _build_title_from_item(item: dict) -> str:
+    exercise_name = str(item.get("exercise_name") or "Тренировка")
+    weight = float(item.get("weight") or 0)
+    reps = int(item.get("reps") or 0)
+    sets_count = int(item.get("sets_count") or 0)
+    rest_pattern = item.get("rest_pattern")
+
+    if weight == 0:
+        title = f"{exercise_name} · {reps}×{sets_count}"
+    else:
+        title = f"{exercise_name} · {weight:g}кг×{reps}×{sets_count}"
+
+    if isinstance(rest_pattern, list) and rest_pattern:
+        title += " · rest pattern"
+    else:
+        title += f" · rest {_format_rest_minutes(item.get('rest_seconds'))}м"
+    return title[:80]
+
+
+def _resolved_title(title: str | None, item: dict | None) -> str:
+    raw = (title or "").strip()
+    if not raw or raw.lower() == "quick":
+        return _build_title_from_item(item or {})
+    return raw[:80]
+
+
 @router.message(F.text == "📒 История")
 async def open_history(message: Message, state: FSMContext, db):
     try:
         await state.clear()
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         workouts = db.list_workouts(user_id=int(user["id"]), limit=10)
-        await state.update_data(history_workouts=workouts)
 
-        if not workouts:
+        display_workouts: list[dict] = []
+        for workout in workouts:
+            details = db.get_workout_details(workout_id=int(workout["id"]), user_id=int(user["id"]))
+            item = (details or {}).get("item") or {}
+            display_workouts.append({**workout, "title": _resolved_title(workout.get("title"), item)})
+
+        await state.update_data(history_workouts=display_workouts)
+
+        if not display_workouts:
             await message.answer(texts.HISTORY_EMPTY, reply_markup=main_menu_kb())
             return
 
-        await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(workouts))
+        await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(display_workouts))
     except Exception:
         log.exception("open_history failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -67,20 +100,20 @@ async def open_workout_details(message: Message, state: FSMContext, db):
             return
 
         workout = details.get("workout") or {}
-        items = details.get("items") or []
+        item = details.get("item") or {}
+        title = _resolved_title(workout.get("title"), item)
 
-        lines = [f"<b>{_parse_date(workout.get('workout_date'))} — {workout.get('title', 'Workout')} (#{workout.get('id')})</b>"]
-        for item in items:
-            line = (
-                f"{item.get('exercise_name', 'Упражнение')}: "
-                f"{item.get('weight', 0)}кг x {item.get('reps', 0)} x {item.get('sets_count', 0)}, "
-                f"отдых {_format_rest_minutes(item.get('rest_seconds'))} мин"
-            )
-            lines.append(line)
-            rest_pattern = item.get("rest_pattern")
-            if isinstance(rest_pattern, list) and rest_pattern:
-                pattern_minutes = ", ".join(f"{(float(s) / 60):g}" for s in rest_pattern)
-                lines.append(f"отдых по подходам: {pattern_minutes}")
+        lines = [f"<b>{_parse_date(workout.get('workout_date'))}</b> — <b>{title}</b>"]
+        lines.append(f"Упражнение: {item.get('exercise_name') or 'Упражнение'}")
+        lines.append(f"Вес: {float(item.get('weight') or 0):g} кг")
+        lines.append(f"Повторы: {int(item.get('reps') or 0)}")
+        lines.append(f"Подходы: {int(item.get('sets_count') or 0)}")
+        lines.append(f"Отдых: {_format_rest_minutes(item.get('rest_seconds'))} мин")
+
+        rest_pattern = item.get("rest_pattern")
+        if isinstance(rest_pattern, list) and rest_pattern:
+            pattern_minutes = ", ".join(f"{(float(s or 0) / 60):g}" for s in rest_pattern)
+            lines.append(f"Отдых по подходам: {pattern_minutes}")
 
         await state.update_data(selected_workout_id=workout_id)
         await message.answer("\n".join(lines), reply_markup=history_details_kb())
