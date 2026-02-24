@@ -1,8 +1,9 @@
 import logging
+import math
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from app import texts
 from app.keyboards import (
@@ -17,6 +18,85 @@ from app.states import QuickLogStates
 
 log = logging.getLogger("handlers.training")
 router = Router()
+
+
+
+MUSCLE_LABELS = {
+    "legs": "🦵 Ноги",
+    "back": "🧱 Спина",
+    "chest": "🫀 Грудь",
+    "shoulders": "🧍 Плечи",
+    "arms": "💪 Руки",
+    "core": "🎯 Кор",
+}
+
+
+def reward_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏋️ Добавить ещё"), KeyboardButton(text="🧬 Персонаж")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def award_xp_and_update_progress(db, user_id: int, exercise_id: int, weight: float, reps: int, sets_count: int) -> dict:
+    progress = db.get_progress(user_id)
+    exercise = db.get_exercise(exercise_id)
+
+    volume = weight * reps * sets_count
+    load_points = math.sqrt(max(0, volume))
+    xp_gain = max(5, round(load_points * 0.8))
+
+    level = int(progress.get("level") or 1)
+    xp = int(progress.get("xp") or 0) + xp_gain
+    xp_to_next = 100 + level * 25
+
+    while xp >= xp_to_next:
+        xp -= xp_to_next
+        level += 1
+        xp_to_next = 100 + level * 25
+
+    current_muscles = dict(progress.get("muscles") or {})
+    for muscle in ("legs", "back", "chest", "shoulders", "arms", "core"):
+        current_muscles.setdefault(muscle, 0)
+
+    muscle_map = exercise.get("muscle_map") or {}
+    if not muscle_map:
+        primary = exercise.get("primary_muscle")
+        if primary:
+            muscle_map = {primary: 1.0}
+
+    growth = {}
+    for muscle, coeff in muscle_map.items():
+        gain = round(load_points * float(coeff))
+        if gain <= 0:
+            continue
+        current_muscles[muscle] = int(current_muscles.get(muscle, 0)) + gain
+        growth[muscle] = gain
+
+    workouts_count = progress.get("workouts_count")
+    total_sets = progress.get("total_sets")
+
+    db.update_progress(
+        user_id=user_id,
+        level=level,
+        xp=xp,
+        muscles=current_muscles,
+        workouts_count=(int(workouts_count) + 1) if workouts_count is not None else None,
+        total_sets=(int(total_sets) + sets_count) if total_sets is not None else None,
+    )
+
+    top_growth = sorted(growth.items(), key=lambda item: item[1], reverse=True)[:3]
+
+    return {
+        "xp_gain": xp_gain,
+        "level": level,
+        "xp": xp,
+        "xp_to_next": xp_to_next,
+        "top_growth": top_growth,
+    }
 
 MUSCLE_MAP = {
     "🦵 Ноги": "legs",
@@ -44,6 +124,11 @@ async def quick_log_start(message: Message, state: FSMContext, db):
     except Exception:
         log.exception("quick_log_start failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "🏋️ Добавить ещё")
+async def add_more(message: Message, state: FSMContext, db):
+    await quick_log_start(message, state, db)
 
 
 @router.message(F.text == "❌ Отмена")
@@ -223,6 +308,7 @@ async def save_quick_log(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.ensure_progress(user["id"])
 
         workout_id = db.create_workout(user["id"], title="Quick")
         item_id = db.create_workout_item(workout_id, int(data["exercise_id"]), order_index=1)
@@ -234,8 +320,29 @@ async def save_quick_log(message: Message, state: FSMContext, db):
             rest_seconds=int(data["rest_seconds"]),
         )
 
+        reward = award_xp_and_update_progress(
+            db=db,
+            user_id=user["id"],
+            exercise_id=int(data["exercise_id"]),
+            weight=float(data["weight"]),
+            reps=int(data["reps"]),
+            sets_count=int(data["sets_count"]),
+        )
+        growth_lines = [
+            f"• {MUSCLE_LABELS.get(muscle, muscle)} +{gain}"
+            for muscle, gain in reward["top_growth"]
+        ]
+        growth_text = "\n".join(growth_lines) if growth_lines else "• Без заметного прироста"
+
         await state.clear()
-        await message.answer(texts.SAVED, reply_markup=main_menu_kb())
+        await message.answer(
+            texts.REWARD_MESSAGE.format(
+                xp_gain=reward["xp_gain"],
+                level=reward["level"],
+                muscles_growth=growth_text,
+            ),
+            reply_markup=reward_kb(),
+        )
     except Exception:
         log.exception("save_quick_log failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
