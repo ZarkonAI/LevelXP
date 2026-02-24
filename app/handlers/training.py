@@ -1,102 +1,25 @@
 import logging
-import math
+import re
+from typing import List, Optional
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import Message
 
 from app import texts
 from app.keyboards import (
     back_cancel_kb,
     confirm_kb,
-    main_menu_kb,
-    muscle_choice_kb,
     exercises_kb,
+    main_menu_kb,
+    mode_kb,
+    muscle_choice_kb,
     training_menu_kb,
 )
 from app.states import QuickLogStates
 
 log = logging.getLogger("handlers.training")
 router = Router()
-
-
-
-MUSCLE_LABELS = {
-    "legs": "🦵 Ноги",
-    "back": "🧱 Спина",
-    "chest": "🫀 Грудь",
-    "shoulders": "🧍 Плечи",
-    "arms": "💪 Руки",
-    "core": "🎯 Кор",
-}
-
-
-def reward_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🏋️ Добавить ещё"), KeyboardButton(text="🧬 Персонаж")],
-            [KeyboardButton(text="↩️ В меню")],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def award_xp_and_update_progress(db, user_id: int, exercise_id: int, weight: float, reps: int, sets_count: int) -> dict:
-    progress = db.get_progress(user_id)
-    exercise = db.get_exercise(exercise_id)
-
-    volume = weight * reps * sets_count
-    load_points = math.sqrt(max(0, volume))
-    xp_gain = max(5, round(load_points * 0.8))
-
-    level = int(progress.get("level") or 1)
-    xp = int(progress.get("xp") or 0) + xp_gain
-    xp_to_next = 100 + level * 25
-
-    while xp >= xp_to_next:
-        xp -= xp_to_next
-        level += 1
-        xp_to_next = 100 + level * 25
-
-    current_muscles = dict(progress.get("muscles") or {})
-    for muscle in ("legs", "back", "chest", "shoulders", "arms", "core"):
-        current_muscles.setdefault(muscle, 0)
-
-    muscle_map = exercise.get("muscle_map") or {}
-    if not muscle_map:
-        primary = exercise.get("primary_muscle")
-        if primary:
-            muscle_map = {primary: 1.0}
-
-    growth = {}
-    for muscle, coeff in muscle_map.items():
-        gain = round(load_points * float(coeff))
-        if gain <= 0:
-            continue
-        current_muscles[muscle] = int(current_muscles.get(muscle, 0)) + gain
-        growth[muscle] = gain
-
-    workouts_count = progress.get("workouts_count")
-    total_sets = progress.get("total_sets")
-
-    db.update_progress(
-        user_id=user_id,
-        level=level,
-        xp=xp,
-        muscles=current_muscles,
-        workouts_count=(int(workouts_count) + 1) if workouts_count is not None else None,
-        total_sets=(int(total_sets) + sets_count) if total_sets is not None else None,
-    )
-
-    top_growth = sorted(growth.items(), key=lambda item: item[1], reverse=True)[:3]
-
-    return {
-        "xp_gain": xp_gain,
-        "level": level,
-        "xp": xp,
-        "xp_to_next": xp_to_next,
-        "top_growth": top_growth,
-    }
 
 MUSCLE_MAP = {
     "🦵 Ноги": "legs",
@@ -107,6 +30,27 @@ MUSCLE_MAP = {
     "🎯 Кор": "core",
 }
 
+MODE_STRENGTH = "🏋️ Силовая (одинаковый отдых)"
+MODE_PATTERN = "🔁 Отдых по подходам"
+
+
+def _parse_float(raw: str) -> float:
+    return float(raw.strip().replace(",", "."))
+
+
+def _extract_pattern_values(raw: str) -> Optional[List[float]]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    tokens = re.findall(r"\d+(?:[\.,]\d+)?", raw)
+    if not tokens:
+        return None
+
+    values: List[float] = []
+    for token in tokens:
+        values.append(float(token.replace(",", ".")))
+    return values
+
 
 @router.message(F.text == "🏋️ Тренировка")
 async def training_menu(message: Message, state: FSMContext):
@@ -115,20 +59,10 @@ async def training_menu(message: Message, state: FSMContext):
 
 
 @router.message(F.text == "⚡ Быстрая запись")
-async def quick_log_start(message: Message, state: FSMContext, db):
-    try:
-        exercises = db.list_exercises(limit=12)
-        await state.set_state(QuickLogStates.choose_exercise)
-        await state.update_data(exercises=exercises)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
-    except Exception:
-        log.exception("quick_log_start failed")
-        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-
-
-@router.message(F.text == "🏋️ Добавить ещё")
-async def add_more(message: Message, state: FSMContext, db):
-    await quick_log_start(message, state, db)
+async def quick_log_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(QuickLogStates.choose_mode)
+    await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
 
 
 @router.message(F.text == "❌ Отмена")
@@ -148,6 +82,26 @@ async def back_any(message: Message, state: FSMContext):
     data = await state.get_data()
     exercises = data.get("exercises") or []
     await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+
+
+@router.message(QuickLogStates.choose_mode)
+async def choose_mode(message: Message, state: FSMContext, db):
+    try:
+        if message.text == MODE_STRENGTH:
+            mode = "strength"
+        elif message.text == MODE_PATTERN:
+            mode = "pattern"
+        else:
+            await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+            return
+
+        exercises = db.list_exercises(limit=12)
+        await state.update_data(mode=mode, exercises=exercises)
+        await state.set_state(QuickLogStates.choose_exercise)
+        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+    except Exception:
+        log.exception("choose_mode failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
 @router.message(QuickLogStates.choose_exercise)
@@ -218,7 +172,7 @@ async def custom_primary_muscle(message: Message, state: FSMContext, db):
 @router.message(QuickLogStates.enter_weight)
 async def enter_weight(message: Message, state: FSMContext):
     try:
-        weight = float((message.text or "").replace(",", ".").strip())
+        weight = _parse_float(message.text or "")
     except (TypeError, ValueError):
         await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
         return
@@ -261,42 +215,105 @@ async def enter_sets(message: Message, state: FSMContext):
         await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
         return
 
+    data = await state.get_data()
     await state.update_data(sets_count=sets_count)
-    await state.set_state(QuickLogStates.enter_rest)
-    await message.answer(texts.ENTER_REST, reply_markup=back_cancel_kb())
+    if data.get("mode") == "pattern":
+        await state.set_state(QuickLogStates.enter_rest_pattern)
+        await message.answer(texts.ENTER_REST_PATTERN, reply_markup=back_cancel_kb())
+    else:
+        await state.set_state(QuickLogStates.enter_rest_single)
+        await message.answer(texts.ENTER_REST_SINGLE, reply_markup=back_cancel_kb())
 
 
-@router.message(QuickLogStates.enter_rest)
-async def enter_rest(message: Message, state: FSMContext):
+@router.message(QuickLogStates.enter_rest_single)
+async def enter_rest_single(message: Message, state: FSMContext):
     try:
-        rest_minutes = int((message.text or "").strip())
+        minutes = _parse_float(message.text or "")
     except (TypeError, ValueError):
         await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
         return
 
-    if rest_minutes < 0 or rest_minutes > 30:
+    if minutes < 0 or minutes > 30:
         await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
         return
 
-    await state.update_data(rest_minutes=rest_minutes, rest_seconds=rest_minutes * 60)
+    rest_seconds = int(round(minutes * 60))
+    await state.update_data(rest_minutes=minutes, rest_seconds=rest_seconds, rest_pattern_seconds=None)
+    await _show_confirm(message, state)
+
+
+@router.message(QuickLogStates.enter_rest_pattern)
+async def enter_rest_pattern(message: Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        sets_count = int(data.get("sets_count", 1))
+        expected_length = max(sets_count - 1, 0)
+
+        raw = (message.text or "").strip()
+        values = _extract_pattern_values(raw)
+        if values is None:
+            await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
+            return
+
+        if expected_length == 0:
+            values = []
+
+        if len(values) != expected_length:
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+
+        if any(v < 0 or v > 30 for v in values):
+            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
+            return
+
+        rest_pattern_seconds = [int(round(v * 60)) for v in values]
+        rest_seconds = int(round(sum(rest_pattern_seconds) / len(rest_pattern_seconds))) if rest_pattern_seconds else 0
+
+        await state.update_data(
+            rest_pattern_minutes=values,
+            rest_pattern_seconds=rest_pattern_seconds,
+            rest_seconds=rest_seconds,
+        )
+        await _show_confirm(message, state)
+    except Exception:
+        log.exception("enter_rest_pattern failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+async def _show_confirm(message: Message, state: FSMContext):
+    data = await state.get_data()
     await state.set_state(QuickLogStates.confirm)
 
-    data = await state.get_data()
-    summary = (
-        f"{data['exercise_name']}\n"
-        f"Вес: {data['weight']} кг\n"
-        f"Повторы: {data['reps']}\n"
-        f"Подходы: {data['sets_count']}\n"
-        f"Отдых: {data['rest_minutes']} мин\n\n"
-        "Сохранить?"
-    )
+    lines = [
+        f"{data['exercise_name']}",
+        f"Вес: {data['weight']} кг",
+        f"Повторы: {data['reps']}",
+        f"Подходы: {data['sets_count']}",
+    ]
+
+    if data.get("mode") == "pattern":
+        minutes_values = data.get("rest_pattern_minutes") or []
+        pattern_str = ", ".join(str(v).replace(".", ",") for v in minutes_values) if minutes_values else "—"
+        lines.append(f"Отдых по подходам: {pattern_str}")
+    else:
+        lines.append(f"Отдых: {str(data.get('rest_minutes', 0)).replace('.', ',')} мин")
+
+    summary = "\n".join(lines)
     await message.answer(f"{texts.CONFIRM}\n\n{summary}", reply_markup=confirm_kb())
 
 
 @router.message(QuickLogStates.confirm, F.text == "✏️ Изменить")
 async def edit_quick_log(message: Message, state: FSMContext):
     data = await state.get_data()
-    for key in ("weight", "reps", "sets_count", "rest_minutes", "rest_seconds"):
+    for key in (
+        "weight",
+        "reps",
+        "sets_count",
+        "rest_minutes",
+        "rest_seconds",
+        "rest_pattern_minutes",
+        "rest_pattern_seconds",
+    ):
         data.pop(key, None)
     await state.set_data(data)
     await state.set_state(QuickLogStates.enter_weight)
@@ -310,7 +327,7 @@ async def save_quick_log(message: Message, state: FSMContext, db):
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         db.ensure_progress(user["id"])
 
-        workout_id = db.create_workout(user["id"], title="Quick")
+        workout_id = db.create_workout(user["id"], title="Quick", mode=data["mode"])
         item_id = db.create_workout_item(workout_id, int(data["exercise_id"]), order_index=1)
         db.create_set(
             workout_item_id=item_id,
@@ -318,31 +335,11 @@ async def save_quick_log(message: Message, state: FSMContext, db):
             reps=int(data["reps"]),
             sets_count=int(data["sets_count"]),
             rest_seconds=int(data["rest_seconds"]),
+            rest_pattern_seconds=data.get("rest_pattern_seconds"),
         )
-
-        reward = award_xp_and_update_progress(
-            db=db,
-            user_id=user["id"],
-            exercise_id=int(data["exercise_id"]),
-            weight=float(data["weight"]),
-            reps=int(data["reps"]),
-            sets_count=int(data["sets_count"]),
-        )
-        growth_lines = [
-            f"• {MUSCLE_LABELS.get(muscle, muscle)} +{gain}"
-            for muscle, gain in reward["top_growth"]
-        ]
-        growth_text = "\n".join(growth_lines) if growth_lines else "• Без заметного прироста"
 
         await state.clear()
-        await message.answer(
-            texts.REWARD_MESSAGE.format(
-                xp_gain=reward["xp_gain"],
-                level=reward["level"],
-                muscles_growth=growth_text,
-            ),
-            reply_markup=reward_kb(),
-        )
+        await message.answer(texts.SAVED, reply_markup=main_menu_kb())
     except Exception:
         log.exception("save_quick_log failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

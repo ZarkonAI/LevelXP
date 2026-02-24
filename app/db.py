@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import Client, create_client
@@ -62,7 +61,6 @@ class Db:
             log.exception("Failed to seed exercises")
 
     def get_or_create_user(self, telegram_id: int, username: Optional[str]) -> Dict[str, Any]:
-        """Создаём/обновляем пользователя по telegram_id и возвращаем строку users."""
         payload = {"telegram_id": telegram_id, "username": username}
         self.client.table("users").upsert(payload, on_conflict="telegram_id").execute()
 
@@ -78,7 +76,6 @@ class Db:
         return res.data[0]
 
     def ensure_progress(self, user_id: int) -> None:
-        """Если progress нет — создаём."""
         res = self.client.table("progress").select("user_id").eq("user_id", user_id).limit(1).execute()
         if res.data:
             return
@@ -104,45 +101,6 @@ class Db:
             raise RuntimeError("Progress not found")
         return res.data[0]
 
-    def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
-        res = (
-            self.client.table("exercises")
-            .select("id,name,primary_muscle,muscle_map")
-            .eq("id", exercise_id)
-            .limit(1)
-            .execute()
-        )
-        if not res.data:
-            raise RuntimeError("Exercise not found")
-        return res.data[0]
-
-    def update_progress(
-        self,
-        user_id: int,
-        level: int,
-        xp: int,
-        muscles: Dict[str, int],
-        workouts_count: Optional[int] = None,
-        total_sets: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        base_payload: Dict[str, Any] = {
-            "level": level,
-            "xp": xp,
-            "muscles": muscles,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        payload = dict(base_payload)
-        if workouts_count is not None:
-            payload["workouts_count"] = workouts_count
-        if total_sets is not None:
-            payload["total_sets"] = total_sets
-
-        res = self.client.table("progress").update(payload).eq("user_id", user_id).execute()
-        if not res.data:
-            raise RuntimeError("update_progress failed")
-        return res.data[0]
-
     def list_exercises(self, limit: int = 12) -> List[Dict[str, Any]]:
         res = (
             self.client.table("exercises")
@@ -161,10 +119,8 @@ class Db:
             "muscle_map": {primary_muscle: 1.0},
         }
         res = self.client.table("exercises").insert(payload).execute()
-        if res.data:
-            row = res.data[0]
-            if "id" in row and "name" in row:
-                return {"id": row["id"], "name": row["name"]}
+        if res.data and res.data[0].get("id") is not None:
+            return {"id": res.data[0]["id"], "name": res.data[0].get("name", name)}
 
         fallback = (
             self.client.table("exercises")
@@ -179,8 +135,9 @@ class Db:
             raise RuntimeError("create_custom_exercise failed")
         return fallback.data[0]
 
-    def create_workout(self, user_id: int, title: str = "Quick") -> int:
-        res = self.client.table("workouts").insert({"user_id": user_id, "title": title}).execute()
+    def create_workout(self, user_id: int, title: str = "Quick", mode: str = "strength") -> int:
+        payload = {"user_id": user_id, "title": title, "mode": mode}
+        res = self.client.table("workouts").insert(payload).execute()
         if res.data and res.data[0].get("id") is not None:
             return int(res.data[0]["id"])
 
@@ -188,6 +145,7 @@ class Db:
             self.client.table("workouts")
             .select("id")
             .eq("user_id", user_id)
+            .eq("title", title)
             .order("created_at", desc=True)
             .limit(1)
             .execute()
@@ -222,6 +180,7 @@ class Db:
         reps: int,
         sets_count: int,
         rest_seconds: int,
+        rest_pattern_seconds: Optional[List[int]] = None,
     ) -> int:
         payload = {
             "workout_item_id": workout_item_id,
@@ -229,6 +188,7 @@ class Db:
             "reps": reps,
             "sets_count": sets_count,
             "rest_seconds": rest_seconds,
+            "rest_pattern": rest_pattern_seconds,
         }
         res = self.client.table("sets").insert(payload).execute()
         if res.data and res.data[0].get("id") is not None:

@@ -61,7 +61,6 @@ async def character(message: Message, db):
         log.exception("character failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
-
 @router.message(F.text.in_({"📒 История", "🔁 Шаблоны", "⚙️ Настройки"}))
 async def stub_sections(message: Message):
     await message.answer(
