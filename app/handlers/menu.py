@@ -40,14 +40,9 @@ async def character(message: Message, db):
         p = db.get_progress(user["id"])
 
         muscles = p.get("muscles") or {}
-        lvl = int(p.get("level") or 1)
-        xp = int(p.get("xp") or 0)
-        xp_to_next = 100 + lvl * 25
-
-        muscle_lines = []
-        for muscle_key in ("legs", "back", "chest", "shoulders", "arms", "core"):
-            value = int(muscles.get(muscle_key, 0) or 0)
-            muscle_lines.append(f"{MUSCLE_LABELS[muscle_key]}: {render_bar(value)} {value}")
+        lvl = p.get("level", 1)
+        xp = p.get("xp", 0)
+        xp_to_next = 100 + int(lvl) * 25
 
         text = (
             "<b>Персонаж</b>\n"

@@ -33,6 +33,8 @@ MUSCLE_MAP = {
 MODE_STRENGTH = "🏋️ Силовая (одинаковый отдых)"
 MODE_PATTERN = "🔁 Отдых по подходам"
 
+MUSCLE_EMOJI = {"legs": "🦵", "back": "🧱", "chest": "🫀", "shoulders": "🧍", "arms": "💪", "core": "🎯"}
+
 
 def _parse_float(raw: str) -> float:
     return float(raw.strip().replace(",", "."))
@@ -337,11 +339,42 @@ async def save_quick_log(message: Message, state: FSMContext, db):
             rest_seconds=int(data["rest_seconds"]),
             rest_pattern_seconds=data.get("rest_pattern_seconds"),
         )
-
-        await state.clear()
-        await message.answer(texts.SAVED, reply_markup=main_menu_kb())
     except Exception:
         log.exception("save_quick_log failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+        return
+
+    try:
+        award = db.award_and_update_progress(
+            user_id=int(user["id"]),
+            exercise_id=int(data["exercise_id"]),
+            weight=float(data["weight"]),
+            reps=int(data["reps"]),
+            sets_count=int(data["sets_count"]),
+        )
+        top = award.get("muscle_gains_sorted_top3") or []
+        if top:
+            lines = [
+                f"- {MUSCLE_EMOJI.get(muscle, '🏋️')} {muscle}: +{gain}"
+                for muscle, gain in top
+            ]
+            pump_text = "\n".join(lines)
+        else:
+            pump_text = "- 🏋️ Общая нагрузка учтена"
+
+        reward_text = (
+            "<b>LevelXP · Награда</b>\n"
+            f"+<b>{award['xp_gain']} XP</b> | Уровень: <b>{award['level_new']}</b>\n"
+            f"XP: <b>{award['xp_new']}/{award['xp_to_next']}</b>\n\n"
+            "<b>Прокачка</b>\n"
+            f"{pump_text}\n\n"
+            "Прогресс засчитан."
+        )
+        await state.clear()
+        await message.answer(reward_text, reply_markup=main_menu_kb())
+    except Exception:
+        log.exception("award_and_update_progress failed")
+        await state.clear()
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 

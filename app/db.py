@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import math
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import Client, create_client
@@ -86,6 +88,8 @@ class Db:
                 "xp": 0,
                 "stats": DEFAULT_STATS,
                 "muscles": DEFAULT_MUSCLES,
+                "workouts_count": 0,
+                "total_sets": 0,
             }
         ).execute()
 
@@ -99,6 +103,18 @@ class Db:
         )
         if not res.data:
             raise RuntimeError("Progress not found")
+        return res.data[0]
+
+    def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
+        res = (
+            self.client.table("exercises")
+            .select("id,name,primary_muscle,muscle_map")
+            .eq("id", exercise_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            raise RuntimeError("Exercise not found")
         return res.data[0]
 
     def list_exercises(self, limit: int = 12) -> List[Dict[str, Any]]:
@@ -205,3 +221,79 @@ class Db:
         if not fallback.data:
             raise RuntimeError("create_set failed")
         return int(fallback.data[0]["id"])
+
+    def award_and_update_progress(
+        self,
+        user_id: int,
+        exercise_id: int,
+        weight: float,
+        reps: int,
+        sets_count: int,
+    ) -> Dict[str, Any]:
+        progress_res = (
+            self.client.table("progress")
+            .select("user_id,level,xp,muscles,workouts_count,total_sets")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not progress_res.data:
+            raise RuntimeError("Progress not found for awarding")
+        progress = progress_res.data[0]
+
+        exercise = self.get_exercise(exercise_id)
+
+        volume = float(weight) * int(reps) * int(sets_count)
+        load_points = math.sqrt(max(0.0, volume))
+        xp_gain = max(5, round(load_points * 0.8))
+
+        muscle_map = exercise.get("muscle_map") or {}
+        primary_muscle = exercise.get("primary_muscle")
+        if not isinstance(muscle_map, dict) or not muscle_map:
+            muscle_map = {primary_muscle: 1.0} if primary_muscle else {}
+
+        muscles = progress.get("muscles") or {}
+        if not isinstance(muscles, dict):
+            muscles = {}
+
+        muscle_gains: List[tuple[str, int]] = []
+        for muscle, coeff in muscle_map.items():
+            if muscle is None:
+                continue
+            gain = round(load_points * float(coeff))
+            if gain <= 0:
+                continue
+            muscles[muscle] = int(muscles.get(muscle, 0)) + gain
+            muscle_gains.append((str(muscle), gain))
+
+        def xp_to_next(level: int) -> int:
+            return 100 + level * 25
+
+        xp_new = int(progress.get("xp", 0)) + int(xp_gain)
+        level_new = int(progress.get("level", 1))
+        while xp_new >= xp_to_next(level_new):
+            xp_new -= xp_to_next(level_new)
+            level_new += 1
+
+        workouts_count = int(progress.get("workouts_count", 0)) + 1
+        total_sets = int(progress.get("total_sets", 0)) + int(sets_count)
+
+        self.client.table("progress").update(
+            {
+                "level": level_new,
+                "xp": xp_new,
+                "muscles": muscles,
+                "workouts_count": workouts_count,
+                "total_sets": total_sets,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("user_id", user_id).execute()
+
+        muscle_gains_sorted_top3 = sorted(muscle_gains, key=lambda x: x[1], reverse=True)[:3]
+        return {
+            "xp_gain": int(xp_gain),
+            "level_new": int(level_new),
+            "xp_new": int(xp_new),
+            "xp_to_next": int(xp_to_next(level_new)),
+            "muscle_gains_sorted_top3": muscle_gains_sorted_top3,
+        }

@@ -9,15 +9,6 @@ def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardBut
     return rows
 
 
-
-def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardButton]]:
-    rows: list[list[KeyboardButton]] = []
-    for idx in range(0, len(buttons), row_width):
-        chunk = buttons[idx : idx + row_width]
-        rows.append([KeyboardButton(text=text) for text in chunk])
-    return rows
-
-
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
