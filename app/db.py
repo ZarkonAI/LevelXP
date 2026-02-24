@@ -151,7 +151,7 @@ class Db:
             raise RuntimeError("create_custom_exercise failed")
         return fallback.data[0]
 
-    def create_workout(self, user_id: int, title: str = "Quick", mode: str = "strength") -> int:
+    def create_workout(self, user_id: int, title: str, mode: str = "strength") -> int:
         payload = {"user_id": user_id, "title": title, "mode": mode}
         res = self.client.table("workouts").insert(payload).execute()
         if res.data and res.data[0].get("id") is not None:
@@ -279,11 +279,13 @@ class Db:
                 .execute()
             )
             sets_rows = sets_res.data or []
+            exercise_id = int(item.get("exercise_id") or 0)
+            exercise_name = exercise_names.get(exercise_id, "Упражнение")
             if not sets_rows:
                 result_items.append(
                     {
                         "exercise_id": item.get("exercise_id"),
-                        "exercise_name": exercise_names.get(int(item.get("exercise_id") or 0), "Упражнение"),
+                        "exercise_name": exercise_name,
                         "weight": 0,
                         "reps": 0,
                         "sets_count": 0,
@@ -297,7 +299,7 @@ class Db:
                 result_items.append(
                     {
                         "exercise_id": item.get("exercise_id"),
-                        "exercise_name": exercise_names.get(int(item.get("exercise_id") or 0), "Упражнение"),
+                        "exercise_name": exercise_name,
                         "weight": set_row.get("weight") or 0,
                         "reps": set_row.get("reps") or 0,
                         "sets_count": set_row.get("sets_count") or 0,
@@ -306,7 +308,15 @@ class Db:
                     }
                 )
 
-        return {"workout": workout, "items": result_items}
+        first_item = result_items[0] if result_items else {
+            "exercise_name": "Упражнение",
+            "weight": 0,
+            "reps": 0,
+            "sets_count": 0,
+            "rest_seconds": 0,
+            "rest_pattern": None,
+        }
+        return {"workout": workout, "item": first_item, "items": result_items}
 
     def create_template_from_workout(self, user_id: int, workout_id: int, name: str) -> int:
         details = self.get_workout_details(workout_id=workout_id, user_id=user_id)

@@ -109,7 +109,7 @@ def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for workout in workouts:
         wid = workout.get("id")
-        title = workout.get("title") or "Workout"
+        title = workout.get("title") or "Тренировка"
         workout_date = _format_date(workout.get("workout_date"))
         rows.append([KeyboardButton(text=f"🗓 {workout_date} · {title} (#{wid})")])
     rows.append([KeyboardButton(text="↩️ В меню")])

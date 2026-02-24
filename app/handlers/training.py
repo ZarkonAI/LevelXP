@@ -36,6 +36,34 @@ MODE_PATTERN = "🔁 Отдых по подходам"
 MUSCLE_EMOJI = {"legs": "🦵", "back": "🧱", "chest": "🫀", "shoulders": "🧍", "arms": "💪", "core": "🎯"}
 
 
+def _trim_title(title: str, max_len: int = 80) -> str:
+    value = (title or "").strip()
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 1].rstrip() + "…"
+
+
+def _build_workout_title(data: dict) -> str:
+    exercise_name = str(data.get("exercise_name") or "Тренировка")
+    weight = float(data.get("weight") or 0)
+    reps = int(data.get("reps") or 0)
+    sets_count = int(data.get("sets_count") or 0)
+
+    if weight == 0:
+        title = f"{exercise_name} · {reps}×{sets_count}"
+    else:
+        title = f"{exercise_name} · {weight:g}кг×{reps}×{sets_count}"
+
+    if data.get("mode") == "pattern":
+        title += " · rest pattern"
+    else:
+        rest_minutes = data.get("rest_minutes")
+        if rest_minutes is not None:
+            title += f" · rest {float(rest_minutes):g}м"
+
+    return _trim_title(title)
+
+
 def _parse_float(raw: str) -> float:
     return float(raw.strip().replace(",", "."))
 
@@ -329,7 +357,8 @@ async def save_quick_log(message: Message, state: FSMContext, db):
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         db.ensure_progress(user["id"])
 
-        workout_id = db.create_workout(user["id"], title="Quick", mode=data["mode"])
+        workout_title = _build_workout_title(data)
+        workout_id = db.create_workout(user["id"], title=workout_title, mode=data["mode"])
         item_id = db.create_workout_item(workout_id, int(data["exercise_id"]), order_index=1)
         db.create_set(
             workout_item_id=item_id,
