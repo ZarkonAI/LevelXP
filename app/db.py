@@ -47,6 +47,34 @@ BASE_EXERCISES = [
 ]
 
 
+def _trim_title(title: str, max_len: int = 80) -> str:
+    value = (title or "").strip()
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 1].rstrip() + "…"
+
+
+def _build_workout_title(
+    exercise_name: str,
+    weight: float,
+    reps: int,
+    sets_count: int,
+    mode: str,
+    rest_seconds: int,
+    rest_pattern: Optional[List[int]] = None,
+) -> str:
+    if weight == 0:
+        title = f"{exercise_name} · {reps}×{sets_count}"
+    else:
+        title = f"{exercise_name} · {weight:g}кг×{reps}×{sets_count}"
+
+    if mode == "pattern":
+        title += " · rest pattern"
+    else:
+        title += f" · rest {float(rest_seconds or 0) / 60:g}м"
+    return _trim_title(title)
+
+
 class Db:
     def __init__(self, url: str, service_key: str) -> None:
         self.client: Client = create_client(url, service_key)
@@ -151,8 +179,20 @@ class Db:
             raise RuntimeError("create_custom_exercise failed")
         return fallback.data[0]
 
-    def create_workout(self, user_id: int, title: str, mode: str = "strength") -> int:
-        payload = {"user_id": user_id, "title": title, "mode": mode}
+    def create_workout(
+        self,
+        user_id: int,
+        title: str,
+        mode: str = "strength",
+        workout_date: Optional[str] = None,
+        status: str = "done",
+        source_workout_id: Optional[int] = None,
+    ) -> int:
+        payload: Dict[str, Any] = {"user_id": user_id, "title": title, "mode": mode, "status": status}
+        if workout_date:
+            payload["workout_date"] = workout_date
+        if source_workout_id is not None:
+            payload["source_workout_id"] = source_workout_id
         res = self.client.table("workouts").insert(payload).execute()
         if res.data and res.data[0].get("id") is not None:
             return int(res.data[0]["id"])
@@ -225,7 +265,7 @@ class Db:
     def list_workouts(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         res = (
             self.client.table("workouts")
-            .select("id,workout_date,title,created_at")
+            .select("id,workout_date,title,created_at,status")
             .eq("user_id", user_id)
             .order("workout_date", desc=True)
             .order("id", desc=True)
@@ -233,6 +273,148 @@ class Db:
             .execute()
         )
         return res.data or []
+
+    def get_workout_header(self, user_id: int, workout_id: int) -> Optional[Dict[str, Any]]:
+        res = (
+            self.client.table("workouts")
+            .select("id,workout_date,title,mode,status,created_at")
+            .eq("id", workout_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        return res.data[0]
+
+    def get_workout_single_item(self, user_id: int, workout_id: int) -> Optional[Dict[str, Any]]:
+        header = self.get_workout_header(user_id=user_id, workout_id=workout_id)
+        if not header:
+            return None
+
+        items_res = (
+            self.client.table("workout_items")
+            .select("id,exercise_id,order_index")
+            .eq("workout_id", workout_id)
+            .order("order_index", desc=False)
+            .limit(1)
+            .execute()
+        )
+        if not items_res.data:
+            return None
+
+        item = items_res.data[0]
+        exercise_id = int(item.get("exercise_id") or 0)
+        exercise_name = "Упражнение"
+
+        if exercise_id:
+            ex_res = self.client.table("exercises").select("id,name").eq("id", exercise_id).limit(1).execute()
+            if ex_res.data:
+                exercise_name = str(ex_res.data[0].get("name") or exercise_name)
+
+        sets_res = (
+            self.client.table("sets")
+            .select("id,weight,reps,sets_count,rest_seconds,rest_pattern")
+            .eq("workout_item_id", item["id"])
+            .order("id", desc=False)
+            .limit(1)
+            .execute()
+        )
+        set_row = (sets_res.data or [{}])[0]
+
+        return {
+            "workout_item_id": int(item["id"]),
+            "exercise_id": exercise_id,
+            "exercise_name": exercise_name,
+            "weight": float(set_row.get("weight") or 0),
+            "reps": int(set_row.get("reps") or 0),
+            "sets_count": int(set_row.get("sets_count") or 0),
+            "rest_seconds": int(set_row.get("rest_seconds") or 0),
+            "rest_pattern": set_row.get("rest_pattern"),
+        }
+
+    def clone_workout_as_new(self, user_id: int, workout_id: int) -> int:
+        header = self.get_workout_header(user_id=user_id, workout_id=workout_id)
+        item = self.get_workout_single_item(user_id=user_id, workout_id=workout_id)
+        if not header or not item:
+            raise RuntimeError("Workout not found")
+
+        workout_date = datetime.now(timezone.utc).date().isoformat()
+        mode = str(header.get("mode") or "strength")
+        title = str(header.get("title") or "").strip()
+        if not title:
+            title = _build_workout_title(
+                exercise_name=str(item.get("exercise_name") or "Тренировка"),
+                weight=float(item.get("weight") or 0),
+                reps=int(item.get("reps") or 0),
+                sets_count=int(item.get("sets_count") or 0),
+                mode=mode,
+                rest_seconds=int(item.get("rest_seconds") or 0),
+                rest_pattern=item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else None,
+            )
+
+        new_workout_id = self.create_workout(
+            user_id=user_id,
+            title=title,
+            mode=mode,
+            workout_date=workout_date,
+            status="planned",
+            source_workout_id=workout_id,
+        )
+        workout_item_id = self.create_workout_item(
+            workout_id=new_workout_id,
+            exercise_id=int(item["exercise_id"]),
+            order_index=1,
+        )
+        self.create_set(
+            workout_item_id=workout_item_id,
+            weight=float(item.get("weight") or 0),
+            reps=int(item.get("reps") or 0),
+            sets_count=int(item.get("sets_count") or 0),
+            rest_seconds=int(item.get("rest_seconds") or 0),
+            rest_pattern_seconds=item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else None,
+        )
+        return int(new_workout_id)
+
+    def update_workout_status(self, user_id: int, workout_id: int, status: str) -> bool:
+        self.client.table("workouts").update({"status": status}).eq("id", workout_id).eq("user_id", user_id).execute()
+        return True
+
+    def update_workout_entry(
+        self,
+        user_id: int,
+        workout_id: int,
+        new_weight: float,
+        new_reps: int,
+        new_sets_count: int,
+        new_rest_seconds: int,
+        new_rest_pattern: Optional[List[int]],
+    ) -> bool:
+        header = self.get_workout_header(user_id=user_id, workout_id=workout_id)
+        item = self.get_workout_single_item(user_id=user_id, workout_id=workout_id)
+        if not header or not item:
+            return False
+
+        payload: Dict[str, Any] = {
+            "weight": new_weight,
+            "reps": new_reps,
+            "sets_count": new_sets_count,
+            "rest_seconds": new_rest_seconds,
+            "rest_pattern": new_rest_pattern,
+        }
+        self.client.table("sets").update(payload).eq("workout_item_id", item["workout_item_id"]).execute()
+
+        title = _build_workout_title(
+            exercise_name=str(item.get("exercise_name") or "Тренировка"),
+            weight=new_weight,
+            reps=new_reps,
+            sets_count=new_sets_count,
+            mode=str(header.get("mode") or "strength"),
+            rest_seconds=new_rest_seconds,
+            rest_pattern=new_rest_pattern,
+        )
+        self.client.table("workouts").update({"title": title}).eq("id", workout_id).eq("user_id", user_id).execute()
+        return True
 
     def get_workout_details(self, workout_id: int, user_id: int) -> Optional[Dict[str, Any]]:
         workout_res = (
