@@ -1,6 +1,7 @@
 import logging
 from aiogram import Router, F
 from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
 
 from app.keyboards import main_menu_kb
 from app import texts
@@ -18,7 +19,8 @@ def render_bar(value: int, max_value: int = 200, segments: int = 6) -> str:
     return "▰" * filled + "▱" * (segments - filled)
 
 @router.message(F.text == "↩️ В меню")
-async def back_to_menu(message: Message):
+async def back_to_menu(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(texts.MENU, reply_markup=main_menu_kb())
 
 @router.message(F.text == "🧬 Персонаж")
@@ -61,7 +63,7 @@ async def character(message: Message, db):
         log.exception("character failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
-@router.message(F.text.in_({"📒 История", "🔁 Шаблоны", "⚙️ Настройки"}))
+@router.message(F.text == "⚙️ Настройки")
 async def stub_sections(message: Message):
     await message.answer(
         "Этот раздел будет в следующих шагах спринта (D2–D4). Сейчас готовим каркас и БД.",

@@ -222,6 +222,177 @@ class Db:
             raise RuntimeError("create_set failed")
         return int(fallback.data[0]["id"])
 
+    def list_workouts(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        res = (
+            self.client.table("workouts")
+            .select("id,workout_date,title,created_at")
+            .eq("user_id", user_id)
+            .order("workout_date", desc=True)
+            .order("id", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+
+    def get_workout_details(self, workout_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+        workout_res = (
+            self.client.table("workouts")
+            .select("id,workout_date,title")
+            .eq("id", workout_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not workout_res.data:
+            return None
+        workout = workout_res.data[0]
+
+        items_res = (
+            self.client.table("workout_items")
+            .select("id,exercise_id,order_index")
+            .eq("workout_id", workout_id)
+            .order("order_index", desc=False)
+            .execute()
+        )
+        items = items_res.data or []
+        if not items:
+            return {"workout": workout, "items": []}
+
+        exercise_ids = [int(item["exercise_id"]) for item in items if item.get("exercise_id") is not None]
+        exercise_names: Dict[int, str] = {}
+        if exercise_ids:
+            ex_res = (
+                self.client.table("exercises")
+                .select("id,name")
+                .in_("id", exercise_ids)
+                .execute()
+            )
+            exercise_names = {int(row["id"]): str(row.get("name") or "Упражнение") for row in (ex_res.data or [])}
+
+        result_items: List[Dict[str, Any]] = []
+        for item in items:
+            sets_res = (
+                self.client.table("sets")
+                .select("weight,reps,sets_count,rest_seconds,rest_pattern")
+                .eq("workout_item_id", item["id"])
+                .order("id", desc=False)
+                .execute()
+            )
+            sets_rows = sets_res.data or []
+            if not sets_rows:
+                result_items.append(
+                    {
+                        "exercise_id": item.get("exercise_id"),
+                        "exercise_name": exercise_names.get(int(item.get("exercise_id") or 0), "Упражнение"),
+                        "weight": 0,
+                        "reps": 0,
+                        "sets_count": 0,
+                        "rest_seconds": 0,
+                        "rest_pattern": None,
+                    }
+                )
+                continue
+
+            for set_row in sets_rows:
+                result_items.append(
+                    {
+                        "exercise_id": item.get("exercise_id"),
+                        "exercise_name": exercise_names.get(int(item.get("exercise_id") or 0), "Упражнение"),
+                        "weight": set_row.get("weight") or 0,
+                        "reps": set_row.get("reps") or 0,
+                        "sets_count": set_row.get("sets_count") or 0,
+                        "rest_seconds": set_row.get("rest_seconds") or 0,
+                        "rest_pattern": set_row.get("rest_pattern"),
+                    }
+                )
+
+        return {"workout": workout, "items": result_items}
+
+    def create_template_from_workout(self, user_id: int, workout_id: int, name: str) -> int:
+        details = self.get_workout_details(workout_id=workout_id, user_id=user_id)
+        if not details:
+            raise RuntimeError("Workout not found or forbidden")
+
+        payload = [
+            {
+                "exercise_id": item.get("exercise_id"),
+                "weight": item.get("weight") or 0,
+                "reps": item.get("reps") or 0,
+                "sets_count": item.get("sets_count") or 0,
+                "rest_seconds": item.get("rest_seconds") or 0,
+                "rest_pattern": item.get("rest_pattern"),
+            }
+            for item in details.get("items", [])
+            if item.get("exercise_id") is not None
+        ]
+
+        res = self.client.table("templates").insert({"user_id": user_id, "name": name, "payload": payload}).execute()
+        if res.data and res.data[0].get("id") is not None:
+            return int(res.data[0]["id"])
+
+        fallback = (
+            self.client.table("templates")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("name", name)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not fallback.data:
+            raise RuntimeError("create_template_from_workout failed")
+        return int(fallback.data[0]["id"])
+
+    def list_templates(self, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        res = (
+            self.client.table("templates")
+            .select("id,name,created_at")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+
+    def get_template(self, user_id: int, template_id: int) -> Optional[Dict[str, Any]]:
+        res = (
+            self.client.table("templates")
+            .select("id,name,payload")
+            .eq("user_id", user_id)
+            .eq("id", template_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        return res.data[0]
+
+    def create_workout_from_template(self, user_id: int, template_row: Dict[str, Any], title: Optional[str] = None) -> int:
+        workout_title = title or str(template_row.get("name") or "Template")
+        workout_id = self.create_workout(user_id=user_id, title=workout_title, mode="template")
+
+        payload = template_row.get("payload") or []
+        if not isinstance(payload, list):
+            payload = []
+
+        for idx, item in enumerate(payload, start=1):
+            exercise_id = item.get("exercise_id")
+            if exercise_id is None:
+                continue
+
+            workout_item_id = self.create_workout_item(workout_id=workout_id, exercise_id=int(exercise_id), order_index=idx)
+            rest_pattern = item.get("rest_pattern")
+            self.create_set(
+                workout_item_id=workout_item_id,
+                weight=float(item.get("weight") or 0),
+                reps=int(item.get("reps") or 0),
+                sets_count=int(item.get("sets_count") or 0),
+                rest_seconds=int(item.get("rest_seconds") or 0),
+                rest_pattern_seconds=rest_pattern if isinstance(rest_pattern, list) else None,
+            )
+
+        return workout_id
+
     def award_and_update_progress(
         self,
         user_id: int,
