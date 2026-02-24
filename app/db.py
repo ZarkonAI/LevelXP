@@ -92,7 +92,7 @@ class Db:
     def get_progress(self, user_id: int) -> Dict[str, Any]:
         res = (
             self.client.table("progress")
-            .select("user_id,level,xp,stats,muscles,updated_at")
+            .select("user_id,level,xp,stats,muscles,workouts_count,total_sets,updated_at")
             .eq("user_id", user_id)
             .limit(1)
             .execute()
