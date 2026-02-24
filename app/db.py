@@ -265,7 +265,7 @@ class Db:
     def list_workouts(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         res = (
             self.client.table("workouts")
-            .select("id,workout_date,title,created_at,status")
+            .select("id,workout_date,title,mode,status")
             .eq("user_id", user_id)
             .order("workout_date", desc=True)
             .order("id", desc=True)
@@ -274,24 +274,19 @@ class Db:
         )
         return res.data or []
 
-    def get_workout_header(self, user_id: int, workout_id: int) -> Optional[Dict[str, Any]]:
-        res = (
+    def get_workout_card(self, user_id: int, workout_id: int) -> Optional[Dict[str, Any]]:
+        header_res = (
             self.client.table("workouts")
-            .select("id,workout_date,title,mode,status,created_at")
+            .select("id,workout_date,title,mode,status")
             .eq("id", workout_id)
             .eq("user_id", user_id)
             .limit(1)
             .execute()
         )
-        if not res.data:
-            return None
-        return res.data[0]
-
-    def get_workout_single_item(self, user_id: int, workout_id: int) -> Optional[Dict[str, Any]]:
-        header = self.get_workout_header(user_id=user_id, workout_id=workout_id)
-        if not header:
+        if not header_res.data:
             return None
 
+        header = header_res.data[0]
         items_res = (
             self.client.table("workout_items")
             .select("id,exercise_id,order_index")
@@ -300,30 +295,34 @@ class Db:
             .limit(1)
             .execute()
         )
-        if not items_res.data:
-            return None
+        item = (items_res.data or [{}])[0]
 
-        item = items_res.data[0]
         exercise_id = int(item.get("exercise_id") or 0)
         exercise_name = "Упражнение"
-
         if exercise_id:
             ex_res = self.client.table("exercises").select("id,name").eq("id", exercise_id).limit(1).execute()
             if ex_res.data:
                 exercise_name = str(ex_res.data[0].get("name") or exercise_name)
 
-        sets_res = (
-            self.client.table("sets")
-            .select("id,weight,reps,sets_count,rest_seconds,rest_pattern")
-            .eq("workout_item_id", item["id"])
-            .order("id", desc=False)
-            .limit(1)
-            .execute()
-        )
-        set_row = (sets_res.data or [{}])[0]
+        set_row: Dict[str, Any] = {}
+        if item.get("id"):
+            sets_res = (
+                self.client.table("sets")
+                .select("id,weight,reps,sets_count,rest_seconds,rest_pattern")
+                .eq("workout_item_id", item["id"])
+                .order("id", desc=False)
+                .limit(1)
+                .execute()
+            )
+            set_row = (sets_res.data or [{}])[0]
 
         return {
-            "workout_item_id": int(item["id"]),
+            "id": int(header.get("id") or workout_id),
+            "workout_date": header.get("workout_date"),
+            "title": header.get("title"),
+            "mode": header.get("mode"),
+            "status": header.get("status"),
+            "workout_item_id": int(item.get("id") or 0),
             "exercise_id": exercise_id,
             "exercise_name": exercise_name,
             "weight": float(set_row.get("weight") or 0),
@@ -334,86 +333,107 @@ class Db:
         }
 
     def clone_workout_as_new(self, user_id: int, workout_id: int) -> int:
-        header = self.get_workout_header(user_id=user_id, workout_id=workout_id)
-        item = self.get_workout_single_item(user_id=user_id, workout_id=workout_id)
-        if not header or not item:
+        card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
+        if not card:
             raise RuntimeError("Workout not found")
 
         workout_date = datetime.now(timezone.utc).date().isoformat()
-        mode = str(header.get("mode") or "strength")
-        title = str(header.get("title") or "").strip()
-        if not title:
-            title = _build_workout_title(
-                exercise_name=str(item.get("exercise_name") or "Тренировка"),
-                weight=float(item.get("weight") or 0),
-                reps=int(item.get("reps") or 0),
-                sets_count=int(item.get("sets_count") or 0),
-                mode=mode,
-                rest_seconds=int(item.get("rest_seconds") or 0),
-                rest_pattern=item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else None,
-            )
-
         new_workout_id = self.create_workout(
             user_id=user_id,
-            title=title,
-            mode=mode,
+            title=str(card.get("title") or "Тренировка"),
+            mode=str(card.get("mode") or "strength"),
             workout_date=workout_date,
             status="planned",
             source_workout_id=workout_id,
         )
         workout_item_id = self.create_workout_item(
             workout_id=new_workout_id,
-            exercise_id=int(item["exercise_id"]),
+            exercise_id=int(card.get("exercise_id") or 0),
             order_index=1,
         )
         self.create_set(
             workout_item_id=workout_item_id,
-            weight=float(item.get("weight") or 0),
-            reps=int(item.get("reps") or 0),
-            sets_count=int(item.get("sets_count") or 0),
-            rest_seconds=int(item.get("rest_seconds") or 0),
-            rest_pattern_seconds=item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else None,
+            weight=float(card.get("weight") or 0),
+            reps=int(card.get("reps") or 0),
+            sets_count=int(card.get("sets_count") or 0),
+            rest_seconds=int(card.get("rest_seconds") or 0),
+            rest_pattern_seconds=card.get("rest_pattern") if isinstance(card.get("rest_pattern"), list) else None,
         )
         return int(new_workout_id)
 
-    def update_workout_status(self, user_id: int, workout_id: int, status: str) -> bool:
-        self.client.table("workouts").update({"status": status}).eq("id", workout_id).eq("user_id", user_id).execute()
-        return True
+    def toggle_status(self, user_id: int, workout_id: int) -> str:
+        card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
+        if not card:
+            raise RuntimeError("Workout not found")
+        new_status = "planned" if card.get("status") == "done" else "done"
+        self.client.table("workouts").update({"status": new_status}).eq("id", workout_id).eq("user_id", user_id).execute()
+        return new_status
 
     def update_workout_entry(
         self,
         user_id: int,
         workout_id: int,
-        new_weight: float,
-        new_reps: int,
-        new_sets_count: int,
-        new_rest_seconds: int,
-        new_rest_pattern: Optional[List[int]],
+        weight: float,
+        reps: int,
+        sets_count: int,
+        rest_seconds: int,
+        rest_pattern: Optional[List[int]],
     ) -> bool:
-        header = self.get_workout_header(user_id=user_id, workout_id=workout_id)
-        item = self.get_workout_single_item(user_id=user_id, workout_id=workout_id)
-        if not header or not item:
+        card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
+        if not card or not card.get("workout_item_id"):
             return False
 
         payload: Dict[str, Any] = {
-            "weight": new_weight,
-            "reps": new_reps,
-            "sets_count": new_sets_count,
-            "rest_seconds": new_rest_seconds,
-            "rest_pattern": new_rest_pattern,
+            "weight": weight,
+            "reps": reps,
+            "sets_count": sets_count,
+            "rest_seconds": rest_seconds,
+            "rest_pattern": rest_pattern,
         }
-        self.client.table("sets").update(payload).eq("workout_item_id", item["workout_item_id"]).execute()
+        self.client.table("sets").update(payload).eq("workout_item_id", int(card["workout_item_id"])).execute()
 
         title = _build_workout_title(
-            exercise_name=str(item.get("exercise_name") or "Тренировка"),
-            weight=new_weight,
-            reps=new_reps,
-            sets_count=new_sets_count,
-            mode=str(header.get("mode") or "strength"),
-            rest_seconds=new_rest_seconds,
-            rest_pattern=new_rest_pattern,
+            exercise_name=str(card.get("exercise_name") or "Тренировка"),
+            weight=weight,
+            reps=reps,
+            sets_count=sets_count,
+            mode=str(card.get("mode") or "strength"),
+            rest_seconds=rest_seconds,
+            rest_pattern=rest_pattern,
         )
         self.client.table("workouts").update({"title": title}).eq("id", workout_id).eq("user_id", user_id).execute()
+        return True
+
+
+    def get_workout_header(self, user_id: int, workout_id: int) -> Optional[Dict[str, Any]]:
+        card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
+        if not card:
+            return None
+        return {
+            "id": card.get("id"),
+            "workout_date": card.get("workout_date"),
+            "title": card.get("title"),
+            "mode": card.get("mode"),
+            "status": card.get("status"),
+        }
+
+    def get_workout_single_item(self, user_id: int, workout_id: int) -> Optional[Dict[str, Any]]:
+        card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
+        if not card:
+            return None
+        return {
+            "workout_item_id": card.get("workout_item_id"),
+            "exercise_id": card.get("exercise_id"),
+            "exercise_name": card.get("exercise_name"),
+            "weight": card.get("weight"),
+            "reps": card.get("reps"),
+            "sets_count": card.get("sets_count"),
+            "rest_seconds": card.get("rest_seconds"),
+            "rest_pattern": card.get("rest_pattern"),
+        }
+
+    def update_workout_status(self, user_id: int, workout_id: int, status: str) -> bool:
+        self.client.table("workouts").update({"status": status}).eq("id", workout_id).eq("user_id", user_id).execute()
         return True
 
     def get_workout_details(self, workout_id: int, user_id: int) -> Optional[Dict[str, Any]]:
