@@ -8,9 +8,28 @@ from app import texts
 log = logging.getLogger("handlers.menu")
 router = Router()
 
+MUSCLE_LABELS = {
+    "legs": "🦵 Ноги",
+    "back": "🧱 Спина",
+    "chest": "🫀 Грудь",
+    "shoulders": "🧍 Плечи",
+    "arms": "💪 Руки",
+    "core": "🎯 Кор",
+}
+
+
+def render_bar(value: int, max_value: int = 200, segments: int = 6) -> str:
+    if max_value <= 0:
+        max_value = 1
+    ratio = min(max(value, 0) / max_value, 1)
+    filled = round(ratio * segments)
+    return "▰" * filled + "▱" * (segments - filled)
+
+
 @router.message(F.text == "↩️ В меню")
 async def back_to_menu(message: Message):
     await message.answer(texts.MENU, reply_markup=main_menu_kb())
+
 
 @router.message(F.text == "🧬 Персонаж")
 async def character(message: Message, db):
@@ -30,12 +49,7 @@ async def character(message: Message, db):
             f"Уровень: <b>{lvl}</b>\n"
             f"XP: <b>{xp}/{xp_to_next}</b>\n\n"
             "<b>Мышцы</b>\n"
-            f"🦵 Ноги: {muscles.get('legs', 0)}\n"
-            f"🧱 Спина: {muscles.get('back', 0)}\n"
-            f"🫀 Грудь: {muscles.get('chest', 0)}\n"
-            f"🧍 Плечи: {muscles.get('shoulders', 0)}\n"
-            f"💪 Руки: {muscles.get('arms', 0)}\n"
-            f"🎯 Кор: {muscles.get('core', 0)}"
+            + "\n".join(muscle_lines)
         )
         await message.answer(text, reply_markup=main_menu_kb())
     except Exception:
