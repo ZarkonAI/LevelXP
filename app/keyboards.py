@@ -13,9 +13,9 @@ def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardBut
 
 def _format_date(raw_date: str | None) -> str:
     if not raw_date:
-        return "--.--"
+        return "--.--.----"
     try:
-        return datetime.fromisoformat(raw_date).strftime("%d.%m")
+        return datetime.fromisoformat(raw_date).strftime("%d.%m.%Y")
     except (TypeError, ValueError):
         return str(raw_date)
 
@@ -107,11 +107,10 @@ def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
 
 def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
-    for workout in workouts:
-        wid = workout.get("id")
+    for idx, workout in enumerate(workouts[:10], start=1):
         title = workout.get("title") or "Тренировка"
         workout_date = _format_date(workout.get("workout_date"))
-        rows.append([KeyboardButton(text=f"🗓 {workout_date} · {title} (#{wid})")])
+        rows.append([KeyboardButton(text=f"{idx}) {workout_date} · {title}")])
     rows.append([KeyboardButton(text="↩️ В меню")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -131,18 +130,7 @@ def history_action_kb(status: str | None) -> ReplyKeyboardMarkup:
     )
 
 
-def history_details_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="💾 Сохранить как шаблон")],
-            [KeyboardButton(text="↩️ Назад")],
-            [KeyboardButton(text="↩️ В меню")],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def edit_confirm_kb() -> ReplyKeyboardMarkup:
+def confirm_edit_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="✅ Сохранить правки")],
@@ -151,6 +139,10 @@ def edit_confirm_kb() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def edit_confirm_kb() -> ReplyKeyboardMarkup:
+    return confirm_edit_kb()
 
 
 def templates_list_kb(templates: list[dict]) -> ReplyKeyboardMarkup:

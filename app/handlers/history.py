@@ -8,20 +8,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app import texts
-from app.keyboards import (
-    back_cancel_kb,
-    back_to_menu_kb,
-    edit_confirm_kb,
-    history_action_kb,
-    history_list_kb,
-    main_menu_kb,
-)
-from app.states import EditWorkoutStates, TemplateStates
+from app.keyboards import back_cancel_kb, back_menu_kb, confirm_edit_kb, history_action_kb, history_list_kb, main_menu_kb
+from app.states import EditWorkoutStates, HistoryStates, TemplateStates
 
 log = logging.getLogger("handlers.history")
 router = Router()
-
-WORKOUT_ID_RE = re.compile(r"#(\d+)\)")
+INDEX_RE = re.compile(r"^(10|[1-9])\)")
 
 
 def _parse_date(date_raw: str | None) -> str:
@@ -34,8 +26,7 @@ def _parse_date(date_raw: str | None) -> str:
 
 
 def _format_rest_minutes(rest_seconds: int | float | None) -> str:
-    value = float(rest_seconds or 0) / 60
-    return f"{value:g}"
+    return f"{float(rest_seconds or 0) / 60:g}"
 
 
 def _extract_pattern_values(raw: str) -> Optional[List[float]]:
@@ -50,31 +41,41 @@ def _status_text(status: str | None) -> str:
 
 
 async def _render_card(message: Message, state: FSMContext, db, user_id: int, workout_id: int):
-    header = db.get_workout_header(user_id=user_id, workout_id=workout_id)
-    item = db.get_workout_single_item(user_id=user_id, workout_id=workout_id)
-    if not header:
+    card = db.get_workout_card(user_id=user_id, workout_id=workout_id)
+    if not card:
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
         return
 
-    item = item or {}
-    lines = [f"<b>{texts.HISTORY_CARD_TITLE}</b>"]
-    lines.append(
-        f"<b>{_parse_date(header.get('workout_date'))}</b> — <b>{header.get('title') or 'Тренировка'}</b> (#{header.get('id')})"
-    )
-    lines.append(f"Статус: {_status_text(header.get('status'))}")
-    lines.append(f"Упражнение: {item.get('exercise_name') or 'Упражнение'}")
-    lines.append(f"Вес: {float(item.get('weight') or 0):g} кг")
-    lines.append(f"Повторы: {int(item.get('reps') or 0)}")
-    lines.append(f"Подходы: {int(item.get('sets_count') or 0)}")
-    lines.append(f"Отдых: {_format_rest_minutes(item.get('rest_seconds'))} мин")
+    lines = [
+        f"<b>{_parse_date(card.get('workout_date'))}</b> — <b>{card.get('title') or 'Тренировка'}</b>",
+        f"Статус: {_status_text(card.get('status'))}",
+        f"Упражнение: {card.get('exercise_name') or 'Упражнение'}",
+        f"Вес: {float(card.get('weight') or 0):g} кг",
+        f"Повторы: {int(card.get('reps') or 0)}",
+        f"Подходы: {int(card.get('sets_count') or 0)}",
+        f"Отдых: {_format_rest_minutes(card.get('rest_seconds'))} мин",
+    ]
 
-    rest_pattern = item.get("rest_pattern")
+    rest_pattern = card.get("rest_pattern")
     if isinstance(rest_pattern, list) and rest_pattern:
         pattern_minutes = ", ".join(f"{(float(s or 0) / 60):g}" for s in rest_pattern)
         lines.append(f"Отдых по подходам: {pattern_minutes}")
 
-    await state.update_data(selected_workout_id=workout_id, mode=header.get("mode"))
-    await message.answer("\n".join(lines), reply_markup=history_action_kb(header.get("status")))
+    await state.update_data(selected_workout_id=workout_id, mode=card.get("mode"))
+    await state.set_state(HistoryStates.viewing_card)
+    await message.answer("\n".join(lines), reply_markup=history_action_kb(card.get("status")))
+
+
+
+
+@router.message(F.text == "↩️ В меню")
+async def history_to_menu(message: Message, state: FSMContext):
+    try:
+        await state.clear()
+        await message.answer(texts.MENU, reply_markup=main_menu_kb())
+    except Exception:
+        log.exception("history_to_menu failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
 @router.message(F.text == "📒 История")
@@ -83,38 +84,42 @@ async def open_history(message: Message, state: FSMContext, db):
         await state.clear()
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         workouts = db.list_workouts(user_id=int(user["id"]), limit=10)
-
         if not workouts:
             await message.answer(texts.HISTORY_EMPTY, reply_markup=main_menu_kb())
             return
 
-        await state.update_data(history_workouts=workouts)
+        history_map = {str(idx): int(workout["id"]) for idx, workout in enumerate(workouts[:10], start=1)}
+        await state.update_data(history_map=history_map, history_workouts=workouts, last_workouts_count=len(workouts))
+        await state.set_state(HistoryStates.browsing_list)
         await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(workouts))
     except Exception:
         log.exception("open_history failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text.regexp(WORKOUT_ID_RE.pattern))
+@router.message(HistoryStates.browsing_list, F.text.regexp(INDEX_RE.pattern))
 async def open_workout_details(message: Message, state: FSMContext, db):
     try:
-        text = message.text or ""
-        if not text.startswith("🗓 "):
-            return
-
-        match = WORKOUT_ID_RE.search(text)
+        match = INDEX_RE.match(message.text or "")
         if not match:
             return
 
-        workout_id = int(match.group(1))
+        idx = match.group(1)
+        data = await state.get_data()
+        history_map = data.get("history_map") or {}
+        workout_id = history_map.get(idx)
+        if not workout_id:
+            await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(data.get("history_workouts") or []))
+            return
+
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=workout_id)
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
     except Exception:
         log.exception("open_workout_details failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text == "🔁 Повторить")
+@router.message(HistoryStates.viewing_card, F.text == "🔁 Повторить")
 async def repeat_from_history(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
@@ -125,13 +130,14 @@ async def repeat_from_history(message: Message, state: FSMContext, db):
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         db.clone_workout_as_new(user_id=int(user["id"]), workout_id=int(selected_workout_id))
-        await message.answer(texts.REPEAT_DONE.format(old_id=selected_workout_id), reply_markup=main_menu_kb())
+        await state.clear()
+        await message.answer(texts.REPEAT_DONE, reply_markup=main_menu_kb())
     except Exception:
         log.exception("repeat_from_history failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text.in_({"✅ Отметить выполненной", "☑️ Снять отметку"}))
+@router.message(HistoryStates.viewing_card, F.text.in_({"✅ Отметить выполненной", "☑️ Снять отметку"}))
 async def toggle_workout_status(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
@@ -140,31 +146,30 @@ async def toggle_workout_status(message: Message, state: FSMContext, db):
             await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
             return
 
-        new_status = "done" if message.text == "✅ Отметить выполненной" else "planned"
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        db.update_workout_status(user_id=int(user["id"]), workout_id=int(workout_id), status=new_status)
+        db.toggle_status(user_id=int(user["id"]), workout_id=int(workout_id))
         await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
     except Exception:
         log.exception("toggle_workout_status failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text == "✏️ Исправить")
+@router.message(HistoryStates.viewing_card, F.text == "✏️ Исправить")
 async def start_edit_workout(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
         workout_id = data.get("selected_workout_id")
         if not workout_id:
-            await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
-            return
-
-        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        header = db.get_workout_header(user_id=int(user["id"]), workout_id=int(workout_id))
-        if not header:
             await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
             return
 
-        await state.update_data(mode=header.get("mode"))
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        card = db.get_workout_card(user_id=int(user["id"]), workout_id=int(workout_id))
+        if not card:
+            await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+            return
+
+        await state.update_data(mode=card.get("mode"), previous_state=HistoryStates.viewing_card.state)
         await state.set_state(EditWorkoutStates.waiting_weight)
         await message.answer(texts.EDIT_START, reply_markup=back_cancel_kb())
     except Exception:
@@ -193,7 +198,7 @@ async def edit_waiting_weight(message: Message, state: FSMContext):
 async def edit_waiting_reps(message: Message, state: FSMContext):
     try:
         reps = int((message.text or "").strip())
-        if reps <= 0 or reps > 500:
+        if reps < 1 or reps > 100:
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
             return
         await state.update_data(new_reps=reps)
@@ -210,16 +215,17 @@ async def edit_waiting_reps(message: Message, state: FSMContext):
 async def edit_waiting_sets(message: Message, state: FSMContext):
     try:
         sets_count = int((message.text or "").strip())
-        if sets_count <= 0 or sets_count > 50:
+        if sets_count < 1 or sets_count > 50:
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
             return
-        await state.update_data(new_sets_count=sets_count)
+
         data = await state.get_data()
+        await state.update_data(new_sets_count=sets_count)
         if data.get("mode") == "pattern":
             await state.set_state(EditWorkoutStates.waiting_rest_pattern)
             await message.answer(texts.EDIT_ENTER_REST_PATTERN, reply_markup=back_cancel_kb())
         else:
-            await state.set_state(EditWorkoutStates.waiting_rest)
+            await state.set_state(EditWorkoutStates.waiting_rest_single)
             await message.answer(texts.EDIT_ENTER_REST_SINGLE, reply_markup=back_cancel_kb())
     except (TypeError, ValueError):
         await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
@@ -228,7 +234,7 @@ async def edit_waiting_sets(message: Message, state: FSMContext):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(EditWorkoutStates.waiting_rest)
+@router.message(EditWorkoutStates.waiting_rest_single)
 async def edit_waiting_rest(message: Message, state: FSMContext):
     try:
         minutes = float((message.text or "").strip().replace(",", "."))
@@ -251,10 +257,7 @@ async def edit_waiting_rest_pattern(message: Message, state: FSMContext):
         sets_count = int(data.get("new_sets_count") or 1)
         expected = max(sets_count - 1, 0)
         values = _extract_pattern_values(message.text or "")
-        if values is None or len(values) != expected:
-            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
-            return
-        if any(v < 0 or v > 30 for v in values):
+        if values is None or len(values) != expected or any(v < 0 or v > 30 for v in values):
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
             return
 
@@ -283,7 +286,7 @@ async def _show_edit_confirm(message: Message, state: FSMContext):
     else:
         lines.append(f"Отдых: {_format_rest_minutes(data.get('new_rest_seconds'))} мин")
 
-    await message.answer(f"{texts.EDIT_CONFIRM}\n\n" + "\n".join(lines), reply_markup=edit_confirm_kb())
+    await message.answer(f"{texts.EDIT_CONFIRM}\n\n" + "\n".join(lines), reply_markup=confirm_edit_kb())
 
 
 @router.message(EditWorkoutStates.confirm, F.text == "✅ Сохранить правки")
@@ -300,13 +303,12 @@ async def save_edit_workout(message: Message, state: FSMContext, db):
         db.update_workout_entry(
             user_id=int(user["id"]),
             workout_id=int(workout_id),
-            new_weight=float(data.get("new_weight") or 0),
-            new_reps=int(data.get("new_reps") or 0),
-            new_sets_count=int(data.get("new_sets_count") or 0),
-            new_rest_seconds=int(data.get("new_rest_seconds") or 0),
-            new_rest_pattern=data.get("new_rest_pattern") if isinstance(data.get("new_rest_pattern"), list) else None,
+            weight=float(data.get("new_weight") or 0),
+            reps=int(data.get("new_reps") or 0),
+            sets_count=int(data.get("new_sets_count") or 0),
+            rest_seconds=int(data.get("new_rest_seconds") or 0),
+            rest_pattern=data.get("new_rest_pattern") if isinstance(data.get("new_rest_pattern"), list) else None,
         )
-        await state.set_state(None)
         await message.answer(texts.EDIT_SAVED)
         await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
     except Exception:
@@ -314,16 +316,15 @@ async def save_edit_workout(message: Message, state: FSMContext, db):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text == "💾 Сохранить как шаблон")
+@router.message(HistoryStates.viewing_card, F.text == "💾 Сохранить как шаблон")
 async def ask_template_name(message: Message, state: FSMContext):
     try:
         data = await state.get_data()
         if not data.get("selected_workout_id"):
             await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
             return
-
         await state.set_state(TemplateStates.waiting_name)
-        await message.answer(texts.ASK_TEMPLATE_NAME, reply_markup=back_to_menu_kb())
+        await message.answer(texts.ASK_TEMPLATE_NAME, reply_markup=back_menu_kb())
     except Exception:
         log.exception("ask_template_name failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -332,9 +333,17 @@ async def ask_template_name(message: Message, state: FSMContext):
 @router.message(TemplateStates.waiting_name)
 async def save_template_name(message: Message, state: FSMContext, db):
     try:
+        if message.text == "↩️ Назад":
+            await history_back_from_template_name(message, state, db)
+            return
+        if message.text == "↩️ В меню":
+            await state.clear()
+            await message.answer(texts.MENU, reply_markup=main_menu_kb())
+            return
+
         template_name = (message.text or "").strip()
         if not template_name:
-            await message.answer(texts.ASK_TEMPLATE_NAME, reply_markup=back_to_menu_kb())
+            await message.answer(texts.ASK_TEMPLATE_NAME, reply_markup=back_menu_kb())
             return
 
         data = await state.get_data()
@@ -346,7 +355,6 @@ async def save_template_name(message: Message, state: FSMContext, db):
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         db.create_template_from_workout(user_id=int(user["id"]), workout_id=int(workout_id), name=template_name)
-
         await state.clear()
         await message.answer(texts.TEMPLATE_SAVED, reply_markup=main_menu_kb())
     except Exception:
@@ -354,19 +362,63 @@ async def save_template_name(message: Message, state: FSMContext, db):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text == "↩️ Назад")
-async def history_back(message: Message, state: FSMContext):
+@router.message(HistoryStates.viewing_card, F.text == "↩️ Назад")
+async def history_back_to_list(message: Message, state: FSMContext):
     try:
-        current_state = await state.get_state()
-        if current_state and current_state.startswith("EditWorkoutStates"):
-            await state.set_state(None)
-
         data = await state.get_data()
-        workouts = data.get("history_workouts") or []
-        if workouts:
-            await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(workouts))
-            return
-        await message.answer(texts.MENU, reply_markup=main_menu_kb())
+        await state.set_state(HistoryStates.browsing_list)
+        await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(data.get("history_workouts") or []))
     except Exception:
-        log.exception("history_back failed")
+        log.exception("history_back_to_list failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(EditWorkoutStates, F.text == "↩️ Назад")
+async def history_back_from_edit(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        workout_id = data.get("selected_workout_id")
+        if not workout_id:
+            await state.set_state(HistoryStates.browsing_list)
+            await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(data.get("history_workouts") or []))
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
+    except Exception:
+        log.exception("history_back_from_edit failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(EditWorkoutStates, F.text == "❌ Отмена")
+async def history_cancel_edit(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        workout_id = data.get("selected_workout_id")
+        if not workout_id:
+            await state.clear()
+            await message.answer(texts.CANCELLED, reply_markup=main_menu_kb())
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
+    except Exception:
+        log.exception("history_cancel_edit failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(TemplateStates.waiting_name, F.text == "↩️ Назад")
+async def history_back_from_template_name(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        workout_id = data.get("selected_workout_id")
+        if not workout_id:
+            await state.clear()
+            await message.answer(texts.MENU, reply_markup=main_menu_kb())
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
+    except Exception:
+        log.exception("history_back_from_template_name failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

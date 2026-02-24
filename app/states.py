@@ -18,10 +18,15 @@ class TemplateStates(StatesGroup):
     waiting_name = State()
 
 
+class HistoryStates(StatesGroup):
+    browsing_list = State()
+    viewing_card = State()
+
+
 class EditWorkoutStates(StatesGroup):
     waiting_weight = State()
     waiting_reps = State()
     waiting_sets = State()
-    waiting_rest = State()
+    waiting_rest_single = State()
     waiting_rest_pattern = State()
     confirm = State()
