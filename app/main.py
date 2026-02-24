@@ -1,0 +1,33 @@
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+
+from app.config import get_settings
+from app.logging_setup import setup_logging
+from app.db import Db
+from app.handlers import all_routers
+
+log = logging.getLogger("main")
+
+async def main():
+    settings = get_settings()
+    setup_logging(settings.log_level)
+
+    bot = Bot(token=settings.bot_token, parse_mode=ParseMode.HTML)
+    dp = Dispatcher()
+
+    db = Db(settings.supabase_url, settings.supabase_service_key)
+    db.seed_exercises_if_empty()
+
+    # простой dependency injection через data
+    dp["db"] = db
+
+    for r in all_routers:
+        dp.include_router(r)
+
+    log.info("Bot started")
+    await dp.start_polling(bot, db=db)
+
+if __name__ == "__main__":
+    asyncio.run(main())
