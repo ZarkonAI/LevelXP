@@ -14,15 +14,23 @@ def _req(name: str) -> str:
 class Settings:
     bot_token: str
     supabase_url: str
-    supabase_service_key: str
+    supabase_key: str
     env: str
     log_level: str
+
+
+def _get_supabase_key() -> str:
+    """Backward-compatible env lookup for Supabase service key."""
+    service_key = os.getenv("SUPABASE_SERVICE_KEY")
+    if service_key:
+        return service_key
+    return _req("SUPABASE_KEY")
 
 def get_settings() -> Settings:
     return Settings(
         bot_token=_req("BOT_TOKEN"),
         supabase_url=_req("SUPABASE_URL"),
-        supabase_service_key=_req("SUPABASE_SERVICE_KEY"),
+        supabase_key=_get_supabase_key(),
         env=os.getenv("ENV", "dev"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
     )

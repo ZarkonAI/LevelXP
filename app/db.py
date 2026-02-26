@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import Client, create_client
@@ -78,6 +78,7 @@ def _build_workout_title(
 class Db:
     def __init__(self, url: str, service_key: str) -> None:
         self.client: Client = create_client(url, service_key)
+        self._ex_cache: Dict[str, Any] = {"data": None, "expires_at": None}
 
     def seed_exercises_if_empty(self) -> None:
         """Idempotent seed: если упражнений нет — добавим базовые."""
@@ -86,6 +87,7 @@ class Db:
             if res.data:
                 return
             self.client.table("exercises").insert(BASE_EXERCISES).execute()
+            self._ex_cache = {"data": None, "expires_at": None}
             log.info("Seeded base exercises: %s", len(BASE_EXERCISES))
         except Exception:
             log.exception("Failed to seed exercises")
@@ -146,14 +148,22 @@ class Db:
         return res.data[0]
 
     def list_exercises(self, limit: int = 12) -> List[Dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        cached_data = self._ex_cache.get("data")
+        expires_at = self._ex_cache.get("expires_at")
+
+        if cached_data is not None and isinstance(expires_at, datetime) and expires_at > now:
+            return list(cached_data)[:limit]
+
         res = (
             self.client.table("exercises")
             .select("id,name,primary_muscle,muscle_map")
             .order("created_at", desc=True)
-            .limit(limit)
             .execute()
         )
-        return res.data or []
+        data = res.data or []
+        self._ex_cache = {"data": data, "expires_at": now + timedelta(minutes=10)}
+        return data[:limit]
 
     def create_custom_exercise(self, name: str, primary_muscle: str) -> Dict[str, Any]:
         payload = {
@@ -163,6 +173,7 @@ class Db:
             "muscle_map": {primary_muscle: 1.0},
         }
         res = self.client.table("exercises").insert(payload).execute()
+        self._ex_cache = {"data": None, "expires_at": None}
         if res.data and res.data[0].get("id") is not None:
             return {"id": res.data[0]["id"], "name": res.data[0].get("name", name)}
 

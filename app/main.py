@@ -21,7 +21,7 @@ async def main():
     )
     dp = Dispatcher()
 
-    db = Db(settings.supabase_url, settings.supabase_service_key)
+    db = Db(settings.supabase_url, settings.supabase_key)
     db.seed_exercises_if_empty()
 
     # простой dependency injection через data
@@ -31,6 +31,7 @@ async def main():
         dp.include_router(r)
 
     log.info("Bot started")
+    log.info("Start polling")
     await dp.start_polling(bot, db=db)
 
 if __name__ == "__main__":

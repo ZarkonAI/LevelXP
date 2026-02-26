@@ -352,24 +352,42 @@ async def edit_quick_log(message: Message, state: FSMContext):
 
 @router.message(QuickLogStates.confirm, F.text == "✅ Сохранить")
 async def save_quick_log(message: Message, state: FSMContext, db):
+    current_state = await state.get_state()
+    if not current_state:
+        log.info("save_quick_log ignored: state already cleared")
+        return
+
+    data = await state.get_data()
+    if data.get("saved"):
+        log.info("save_quick_log ignored: already saved")
+        return
+
+    await state.update_data(saved=True)
+
     try:
-        data = await state.get_data()
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         db.ensure_progress(user["id"])
 
         workout_title = _build_workout_title(data)
         workout_id = db.create_workout(user["id"], title=workout_title, mode=data["mode"])
-        item_id = db.create_workout_item(workout_id, int(data["exercise_id"]), order_index=1)
-        db.create_set(
-            workout_item_id=item_id,
-            weight=float(data["weight"]),
-            reps=int(data["reps"]),
-            sets_count=int(data["sets_count"]),
-            rest_seconds=int(data["rest_seconds"]),
-            rest_pattern_seconds=data.get("rest_pattern_seconds"),
-        )
+        try:
+            item_id = db.create_workout_item(workout_id, int(data["exercise_id"]), order_index=1)
+            db.create_set(
+                workout_item_id=item_id,
+                weight=float(data["weight"]),
+                reps=int(data["reps"]),
+                sets_count=int(data["sets_count"]),
+                rest_seconds=int(data["rest_seconds"]),
+                rest_pattern_seconds=data.get("rest_pattern_seconds"),
+            )
+        except Exception:
+            log.exception("save_quick_log failed while inserting workout_items/sets")
+            await state.clear()
+            await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+            return
     except Exception:
         log.exception("save_quick_log failed")
+        await state.clear()
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
         return
 
