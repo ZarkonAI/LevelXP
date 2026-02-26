@@ -26,3 +26,7 @@ async def start_cmd(message: Message, db):
 @router.message(Command("ping"))
 async def ping(message: Message):
     await message.answer(texts.PING, reply_markup=main_menu_kb())
+
+@router.message(Command("version"))
+async def version(message: Message):
+    await message.answer(texts.VERSION, reply_markup=main_menu_kb())
