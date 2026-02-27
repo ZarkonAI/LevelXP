@@ -1,13 +1,16 @@
 import logging
-from aiogram import Router, F
-from aiogram.types import Message
-from aiogram.fsm.context import FSMContext
 
-from app.keyboards import main_menu_kb
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
+
 from app import texts
+from app.keyboards import main_menu_kb
 
 log = logging.getLogger("handlers.menu")
 router = Router()
+
 
 def render_bar(value: int, max_value: int = 200, segments: int = 6) -> str:
     try:
@@ -18,10 +21,36 @@ def render_bar(value: int, max_value: int = 200, segments: int = 6) -> str:
     filled = max(0, min(segments, filled))
     return "▰" * filled + "▱" * (segments - filled)
 
+
+@router.message(Command("menu"))
+async def menu_cmd(message: Message, state: FSMContext):
+    try:
+        await state.clear()
+        await message.answer(texts.MENU, reply_markup=main_menu_kb())
+    except Exception:
+        log.exception("menu_cmd failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "❌ Отмена")
+async def cancel_to_menu(message: Message, state: FSMContext):
+    try:
+        await state.clear()
+        await message.answer(texts.CANCELLED, reply_markup=main_menu_kb())
+    except Exception:
+        log.exception("cancel_to_menu failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
 @router.message(F.text == "↩️ В меню")
 async def back_to_menu(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(texts.MENU, reply_markup=main_menu_kb())
+    try:
+        await state.clear()
+        await message.answer(texts.MENU, reply_markup=main_menu_kb())
+    except Exception:
+        log.exception("back_to_menu failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
 
 @router.message(F.text == "🧬 Персонаж")
 async def character(message: Message, db):
@@ -63,9 +92,14 @@ async def character(message: Message, db):
         log.exception("character failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
+
 @router.message(F.text == "⚙️ Настройки")
 async def stub_sections(message: Message):
-    await message.answer(
-        "Этот раздел будет в следующих шагах спринта (D2–D4). Сейчас готовим каркас и БД.",
-        reply_markup=main_menu_kb(),
-    )
+    try:
+        await message.answer(
+            "Этот раздел будет в следующих шагах спринта (D2–D4). Сейчас готовим каркас и БД.",
+            reply_markup=main_menu_kb(),
+        )
+    except Exception:
+        log.exception("stub_sections failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

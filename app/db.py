@@ -12,6 +12,18 @@ log = logging.getLogger("db")
 DEFAULT_MUSCLES = {"legs": 0, "back": 0, "chest": 0, "shoulders": 0, "arms": 0, "core": 0}
 DEFAULT_STATS = {"strength": 0, "stamina": 0, "athletics": 0}
 
+
+ACHIEVEMENTS_META = {
+    "first_workout": "Первая тренировка",
+    "workouts_10": "10 тренировок",
+    "workouts_30": "30 тренировок",
+    "sets_100": "100 подходов суммарно",
+    "legs_100": "Ноги 100+",
+    "chest_100": "Грудь 100+",
+    "back_100": "Спина 100+",
+    "streak_3": "3 дня подряд",
+}
+
 BASE_EXERCISES = [
     {
         "name": "Присед",
@@ -118,13 +130,14 @@ class Db:
                 "muscles": DEFAULT_MUSCLES,
                 "workouts_count": 0,
                 "total_sets": 0,
+                "achievements": [],
             }
         ).execute()
 
     def get_progress(self, user_id: int) -> Dict[str, Any]:
         res = (
             self.client.table("progress")
-            .select("user_id,level,xp,stats,muscles,workouts_count,total_sets,updated_at")
+            .select("user_id,level,xp,stats,muscles,workouts_count,total_sets,achievements,updated_at")
             .eq("user_id", user_id)
             .limit(1)
             .execute()
@@ -605,6 +618,107 @@ class Db:
 
         return workout_id
 
+    @staticmethod
+    def _to_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def check_and_award_achievements(self, user_id: int) -> List[str]:
+        progress_res = (
+            self.client.table("progress")
+            .select("user_id,workouts_count,total_sets,muscles,achievements")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not progress_res.data:
+            return []
+
+        progress = progress_res.data[0] or {}
+        workouts_count = self._to_int(progress.get("workouts_count"), 0)
+        total_sets = self._to_int(progress.get("total_sets"), 0)
+
+        muscles_raw = progress.get("muscles")
+        muscles = muscles_raw if isinstance(muscles_raw, dict) else {}
+        legs = self._to_int(muscles.get("legs"), 0)
+        chest = self._to_int(muscles.get("chest"), 0)
+        back = self._to_int(muscles.get("back"), 0)
+
+        achievements_raw = progress.get("achievements")
+        current_ids = [str(a) for a in achievements_raw if isinstance(a, str)] if isinstance(achievements_raw, list) else []
+        current_set = set(current_ids)
+
+        unlocked: List[str] = []
+        if workouts_count >= 1:
+            unlocked.append("first_workout")
+        if workouts_count >= 10:
+            unlocked.append("workouts_10")
+        if workouts_count >= 30:
+            unlocked.append("workouts_30")
+        if total_sets >= 100:
+            unlocked.append("sets_100")
+        if legs >= 100:
+            unlocked.append("legs_100")
+        if chest >= 100:
+            unlocked.append("chest_100")
+        if back >= 100:
+            unlocked.append("back_100")
+
+        streak_unlocked = False
+        try:
+            streak_rows = (
+                self.client.table("workouts")
+                .select("workout_date")
+                .eq("user_id", user_id)
+                .eq("status", "done")
+                .order("workout_date", desc=True)
+                .limit(30)
+                .execute()
+            ).data or []
+            days = sorted({str(row.get("workout_date")) for row in streak_rows if row.get("workout_date")})
+            run = 1
+            for i in range(1, len(days)):
+                prev = datetime.fromisoformat(days[i - 1]).date()
+                cur = datetime.fromisoformat(days[i]).date()
+                if (cur - prev).days == 1:
+                    run += 1
+                    if run >= 3:
+                        streak_unlocked = True
+                        break
+                elif cur != prev:
+                    run = 1
+        except Exception:
+            log.exception("check streak failed")
+
+        if streak_unlocked:
+            unlocked.append("streak_3")
+
+        new_achievements = [aid for aid in unlocked if aid not in current_set]
+        if not new_achievements:
+            return []
+
+        updated_ids = current_ids + new_achievements
+        self.client.table("progress").update(
+            {
+                "achievements": updated_ids,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("user_id", user_id).execute()
+        return new_achievements
+
     def award_and_update_progress(
         self,
         user_id: int,
@@ -626,7 +740,10 @@ class Db:
 
         exercise = self.get_exercise(exercise_id)
 
-        volume = float(weight) * int(reps) * int(sets_count)
+        weight_val = self._to_float(weight, 0.0)
+        reps_val = self._to_int(reps, 0)
+        sets_val = self._to_int(sets_count, 0)
+        volume = weight_val * reps_val * sets_val
         load_points = math.sqrt(max(0.0, volume))
         xp_gain = max(5, round(load_points * 0.8))
 
@@ -652,14 +769,14 @@ class Db:
         def xp_to_next(level: int) -> int:
             return 100 + level * 25
 
-        xp_new = int(progress.get("xp", 0)) + int(xp_gain)
-        level_new = int(progress.get("level", 1))
+        xp_new = self._to_int(progress.get("xp"), 0) + int(xp_gain)
+        level_new = max(1, self._to_int(progress.get("level"), 1))
         while xp_new >= xp_to_next(level_new):
             xp_new -= xp_to_next(level_new)
             level_new += 1
 
-        workouts_count = int(progress.get("workouts_count", 0)) + 1
-        total_sets = int(progress.get("total_sets", 0)) + int(sets_count)
+        workouts_count = self._to_int(progress.get("workouts_count"), 0) + 1
+        total_sets = self._to_int(progress.get("total_sets"), 0) + sets_val
 
         self.client.table("progress").update(
             {
