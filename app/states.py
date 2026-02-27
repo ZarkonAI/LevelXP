@@ -21,6 +21,7 @@ class TemplateStates(StatesGroup):
 class HistoryStates(StatesGroup):
     browsing_list = State()
     viewing_card = State()
+    choosing_repeat_mode = State()
 
 
 class EditWorkoutStates(StatesGroup):

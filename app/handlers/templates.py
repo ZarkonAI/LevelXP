@@ -15,18 +15,10 @@ TEMPLATE_ID_RE = re.compile(r"#(\d+)\)")
 
 
 @router.message(F.text == "🔁 Шаблоны")
-async def open_templates(message: Message, state: FSMContext, db):
+async def open_templates(message: Message, state: FSMContext):
     try:
         await state.clear()
-        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        templates = db.list_templates(user_id=int(user["id"]), limit=20)
-        await state.update_data(templates_list=templates)
-
-        if not templates:
-            await message.answer(texts.TEMPLATES_EMPTY, reply_markup=main_menu_kb())
-            return
-
-        await message.answer(texts.TEMPLATES_TITLE, reply_markup=templates_list_kb(templates))
+        await message.answer("Скоро", reply_markup=main_menu_kb())
     except Exception:
         log.exception("open_templates failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

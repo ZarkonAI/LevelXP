@@ -4,16 +4,33 @@ from datetime import datetime
 from typing import List, Optional
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app import texts
-from app.keyboards import back_cancel_kb, back_menu_kb, confirm_edit_kb, history_action_kb, history_list_kb, main_menu_kb
-from app.states import EditWorkoutStates, HistoryStates, TemplateStates
+from app.keyboards import (
+    back_cancel_kb,
+    back_menu_kb,
+    confirm_edit_kb,
+    history_action_kb,
+    history_list_kb,
+    main_menu_kb,
+    repeat_options_kb,
+)
+from app.states import EditWorkoutStates, HistoryStates, QuickLogStates, TemplateStates
 
 log = logging.getLogger("handlers.history")
 router = Router()
 INDEX_RE = re.compile(r"^(10|[1-9])\)")
+EDIT_FILTER = StateFilter(
+    EditWorkoutStates.waiting_weight,
+    EditWorkoutStates.waiting_reps,
+    EditWorkoutStates.waiting_sets,
+    EditWorkoutStates.waiting_rest_single,
+    EditWorkoutStates.waiting_rest_pattern,
+    EditWorkoutStates.confirm,
+)
 
 
 def _parse_date(date_raw: str | None) -> str:
@@ -120,7 +137,23 @@ async def open_workout_details(message: Message, state: FSMContext, db):
 
 
 @router.message(HistoryStates.viewing_card, F.text == "🔁 Повторить")
-async def repeat_from_history(message: Message, state: FSMContext, db):
+async def repeat_from_history(message: Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        selected_workout_id = data.get("selected_workout_id")
+        if not selected_workout_id:
+            await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
+            return
+
+        await state.set_state(HistoryStates.choosing_repeat_mode)
+        await message.answer("Повторить тренировку? Выбери вариант:", reply_markup=repeat_options_kb())
+    except Exception:
+        log.exception("repeat_from_history failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(HistoryStates.choosing_repeat_mode, F.text == "✅ Точно так же")
+async def repeat_from_history_exact(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
         selected_workout_id = data.get("selected_workout_id")
@@ -133,7 +166,47 @@ async def repeat_from_history(message: Message, state: FSMContext, db):
         await state.clear()
         await message.answer(texts.REPEAT_DONE, reply_markup=main_menu_kb())
     except Exception:
-        log.exception("repeat_from_history failed")
+        log.exception("repeat_from_history_exact failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(HistoryStates.choosing_repeat_mode, F.text == "✏️ Изменить перед записью")
+async def repeat_from_history_edit_before_save(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        selected_workout_id = data.get("selected_workout_id")
+        if not selected_workout_id:
+            await message.answer(texts.HISTORY_TITLE, reply_markup=main_menu_kb())
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        card = db.get_workout_card(user_id=int(user["id"]), workout_id=int(selected_workout_id))
+        if not card:
+            await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+            return
+
+        rest_pattern = card.get("rest_pattern") if isinstance(card.get("rest_pattern"), list) else []
+        prefill_rest_pattern_minutes = [float(s or 0) / 60 for s in rest_pattern]
+        await state.update_data(
+            mode=card.get("mode") or "strength",
+            exercise_id=card.get("exercise_id"),
+            exercise_name=card.get("exercise_name"),
+            repeat_source_workout_id=int(selected_workout_id),
+            prefill_weight=float(card.get("weight") or 0),
+            prefill_reps=int(card.get("reps") or 0),
+            prefill_sets=int(card.get("sets_count") or 0),
+            prefill_rest_minutes=float(card.get("rest_seconds") or 0) / 60,
+            prefill_rest_pattern_minutes=prefill_rest_pattern_minutes,
+            prefill_rest_pattern_text=", ".join(f"{v:g}" for v in prefill_rest_pattern_minutes),
+        )
+        await state.set_state(QuickLogStates.enter_weight)
+        await message.answer(
+            "Введи вес (кг). Текущее: "
+            f"{float(card.get('weight') or 0):g} кг. Введи новое или отправь '.' чтобы оставить как есть",
+            reply_markup=back_cancel_kb(),
+        )
+    except Exception:
+        log.exception("repeat_from_history_edit_before_save failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
@@ -362,6 +435,22 @@ async def save_template_name(message: Message, state: FSMContext, db):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
+@router.message(HistoryStates.choosing_repeat_mode, F.text == "↩️ Назад")
+async def repeat_mode_back(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        workout_id = data.get("selected_workout_id")
+        if not workout_id:
+            await state.set_state(HistoryStates.browsing_list)
+            await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(data.get("history_workouts") or []))
+            return
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
+    except Exception:
+        log.exception("repeat_mode_back failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
 @router.message(HistoryStates.viewing_card, F.text == "↩️ Назад")
 async def history_back_to_list(message: Message, state: FSMContext):
     try:
@@ -373,7 +462,7 @@ async def history_back_to_list(message: Message, state: FSMContext):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(EditWorkoutStates, F.text == "↩️ Назад")
+@router.message(EDIT_FILTER, F.text == "↩️ Назад")
 async def history_back_from_edit(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
@@ -390,7 +479,7 @@ async def history_back_from_edit(message: Message, state: FSMContext, db):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(EditWorkoutStates, F.text == "❌ Отмена")
+@router.message(EDIT_FILTER, F.text == "❌ Отмена")
 async def history_cancel_edit(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
