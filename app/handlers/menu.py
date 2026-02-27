@@ -94,12 +94,10 @@ async def character(message: Message, db):
 
 
 @router.message(F.text == "⚙️ Настройки")
-async def stub_sections(message: Message):
+async def stub_sections(message: Message, state: FSMContext):
     try:
-        await message.answer(
-            "Этот раздел будет в следующих шагах спринта (D2–D4). Сейчас готовим каркас и БД.",
-            reply_markup=main_menu_kb(),
-        )
+        await state.clear()
+        await message.answer("Скоро", reply_markup=main_menu_kb())
     except Exception:
         log.exception("stub_sections failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

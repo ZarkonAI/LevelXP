@@ -172,3 +172,15 @@ def back_menu_kb() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def repeat_options_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Точно так же")],
+            [KeyboardButton(text="✏️ Изменить перед записью")],
+            [KeyboardButton(text="↩️ Назад")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
