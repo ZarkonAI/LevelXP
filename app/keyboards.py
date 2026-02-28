@@ -184,3 +184,24 @@ def repeat_options_kb() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def settings_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="⚖️ Единицы")],
+            [KeyboardButton(text="🕒 Часовой пояс")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def units_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="kg"), KeyboardButton(text="lb")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )

@@ -11,23 +11,28 @@ from app.keyboards import main_menu_kb
 log = logging.getLogger("handlers.achievements")
 router = Router()
 
-ACHIEVEMENTS_INFO = [
-    ("first_workout", "Сделать 1 тренировку"),
-    ("workouts_10", "Сделать 10 тренировок"),
-    ("workouts_30", "Сделать 30 тренировок"),
-    ("sets_100", "Набрать 100 подходов суммарно"),
-    ("legs_100", "Прокачка ног 100+"),
-    ("chest_100", "Прокачка груди 100+"),
-    ("back_100", "Прокачка спины 100+"),
-    ("streak_3", "3 дня подряд с выполненными тренировками"),
-]
-
 
 @router.message(F.text == "🏆 Достижения")
-async def show_achievements(message: Message, state: FSMContext):
+async def show_achievements(message: Message, state: FSMContext, db):
     try:
         await state.clear()
-        await message.answer("Скоро", reply_markup=main_menu_kb())
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.ensure_progress(int(user["id"]))
+        progress = db.get_progress(int(user["id"]))
+        achievement_ids = progress.get("achievements", [])
+        if not isinstance(achievement_ids, list):
+            achievement_ids = []
+
+        if not achievement_ids:
+            text = f"{texts.ACHIEVEMENTS_TITLE}\n\n{texts.ACHIEVEMENTS_EMPTY}"
+            await message.answer(text, reply_markup=main_menu_kb())
+            return
+
+        lines = [texts.ACHIEVEMENTS_TITLE, ""]
+        for aid in achievement_ids:
+            title = ACHIEVEMENTS_META.get(str(aid), str(aid))
+            lines.append(f"- 🏆 {title}")
+        await message.answer("\n".join(lines), reply_markup=main_menu_kb())
     except Exception:
         log.exception("show_achievements failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

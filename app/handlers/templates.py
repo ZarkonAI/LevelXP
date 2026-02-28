@@ -2,11 +2,13 @@ import logging
 import re
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app import texts
 from app.keyboards import main_menu_kb, templates_confirm_kb, templates_list_kb
+from app.states import TemplateBrowseStates
 
 log = logging.getLogger("handlers.templates")
 router = Router()
@@ -15,10 +17,18 @@ TEMPLATE_ID_RE = re.compile(r"#(\d+)\)")
 
 
 @router.message(F.text == "🔁 Шаблоны")
-async def open_templates(message: Message, state: FSMContext):
+async def open_templates(message: Message, state: FSMContext, db):
     try:
         await state.clear()
-        await message.answer("Скоро", reply_markup=main_menu_kb())
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        templates = db.list_templates(user_id=int(user["id"]))
+        if not templates:
+            await message.answer(texts.TEMPLATES_EMPTY, reply_markup=main_menu_kb())
+            return
+
+        await state.update_data(templates_list=templates)
+        await state.set_state(TemplateBrowseStates.browsing)
+        await message.answer(texts.TEMPLATES_TITLE, reply_markup=templates_list_kb(templates))
     except Exception:
         log.exception("open_templates failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -51,6 +61,7 @@ async def select_template(message: Message, state: FSMContext, db):
         preview_text = "\n".join(preview) if preview else "• пустой шаблон"
 
         await state.update_data(selected_template_id=template_id)
+        await state.set_state(TemplateBrowseStates.confirming)
         await message.answer(
             f"<b>{template.get('name', 'Шаблон')} (#{template.get('id')})</b>\n{preview_text}\n\n{texts.TEMPLATE_REPEAT_CONFIRM}",
             reply_markup=templates_confirm_kb(),
@@ -83,14 +94,16 @@ async def repeat_template(message: Message, state: FSMContext, db):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text == "↩️ Назад")
+@router.message(StateFilter(TemplateBrowseStates.browsing, TemplateBrowseStates.confirming), F.text == "↩️ Назад")
 async def templates_back(message: Message, state: FSMContext):
     try:
         data = await state.get_data()
         templates = data.get("templates_list") or []
         if templates:
+            await state.set_state(TemplateBrowseStates.browsing)
             await message.answer(texts.TEMPLATES_TITLE, reply_markup=templates_list_kb(templates))
             return
+        await state.clear()
         await message.answer(texts.MENU, reply_markup=main_menu_kb())
     except Exception:
         log.exception("templates_back failed")

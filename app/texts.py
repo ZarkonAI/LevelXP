@@ -53,3 +53,10 @@ ACHIEVEMENT_UNLOCKED = "🏆 Достижение открыто: {name}"
 PING = "ok"
 
 VERSION = "LevelXP v1.0"
+
+ACHIEVEMENTS_EMPTY = "Пока достижений нет. Запиши тренировку, чтобы открыть первое."
+
+SETTINGS_TEXT = "<b>⚙️ Настройки</b>\nЕдиницы: <b>{units}</b>\nЧасовой пояс: <b>{timezone}</b>"
+SETTINGS_UNITS_PROMPT = "Выбери единицы измерения:"
+SETTINGS_TIMEZONE_PROMPT = "Введи часовой пояс в формате UTC+2 или UTC-5."
+SETTINGS_TIMEZONE_INVALID = "Неверный формат. Используй UTC+2 или UTC-5."
