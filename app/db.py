@@ -136,17 +136,45 @@ class Db:
             }
         ).execute()
 
+    @staticmethod
+    def _is_missing_column_error(exc: Exception, column_name: str) -> bool:
+        message = str(exc).lower()
+        return "column" in message and column_name.lower() in message and "progress" in message
+
     def get_progress(self, user_id: int) -> Dict[str, Any]:
-        res = (
-            self.client.table("progress")
-            .select("user_id,level,xp,stats,muscles,workouts_count,total_sets,achievements,updated_at")
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-        if not res.data:
-            raise RuntimeError("Progress not found")
-        return res.data[0]
+        field_sets = [
+            "user_id,level,xp,stats,muscles,workouts_count,total_sets,achievements,updated_at",
+            "user_id,level,xp,stats,muscles,workouts_count,total_sets,updated_at",
+            "user_id,level,xp,stats,muscles,updated_at",
+        ]
+
+        last_exc: Optional[Exception] = None
+        for fields in field_sets:
+            try:
+                res = self.client.table("progress").select(fields).eq("user_id", user_id).limit(1).execute()
+                if not res.data:
+                    raise RuntimeError("Progress not found")
+                row = res.data[0] or {}
+                if not isinstance(row.get("achievements"), list):
+                    row["achievements"] = []
+                row["workouts_count"] = self._to_int(row.get("workouts_count"), 0)
+                row["total_sets"] = self._to_int(row.get("total_sets"), 0)
+                row["stats"] = row.get("stats") if isinstance(row.get("stats"), dict) else DEFAULT_STATS.copy()
+                row["muscles"] = row.get("muscles") if isinstance(row.get("muscles"), dict) else DEFAULT_MUSCLES.copy()
+                return row
+            except Exception as exc:
+                last_exc = exc
+                if "achievements" in fields and self._is_missing_column_error(exc, "achievements"):
+                    continue
+                if "workouts_count" in fields and (
+                    self._is_missing_column_error(exc, "workouts_count") or self._is_missing_column_error(exc, "total_sets")
+                ):
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Progress not found")
 
     def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
         res = (
@@ -578,6 +606,12 @@ class Db:
         if not fallback.data:
             raise RuntimeError("create_template_from_workout failed")
         return int(fallback.data[0]["id"])
+
+    def update_user_units(self, user_id: int, units: str) -> None:
+        self.client.table("users").update({"units": units}).eq("id", user_id).execute()
+
+    def update_user_timezone(self, user_id: int, timezone_value: str) -> None:
+        self.client.table("users").update({"timezone": timezone_value}).eq("id", user_id).execute()
 
     def list_templates(self, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
         res = (

@@ -31,3 +31,13 @@ class EditWorkoutStates(StatesGroup):
     waiting_rest_single = State()
     waiting_rest_pattern = State()
     confirm = State()
+
+
+class SettingsStates(StatesGroup):
+    units_menu = State()
+    waiting_timezone = State()
+
+
+class TemplateBrowseStates(StatesGroup):
+    browsing = State()
+    confirming = State()

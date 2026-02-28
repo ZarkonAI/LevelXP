@@ -79,10 +79,14 @@ async def character(message: Message, db):
             line("🎯 Кор", "core"),
         ]
 
+        achievements = p.get("achievements", [])
+        achievements_count = len(achievements) if isinstance(achievements, list) else 0
+
         text = (
             "<b>Персонаж</b>\n"
             f"Уровень: <b>{lvl}</b>\n"
-            f"XP: <b>{xp}/{xp_to_next}</b>\n\n"
+            f"XP: <b>{xp}/{xp_to_next}</b>\n"
+            f"Достижений: <b>{achievements_count}</b>\n\n"
             "<b>Мышцы</b>\n"
             + "\n".join(muscle_lines)
         )
@@ -92,12 +96,3 @@ async def character(message: Message, db):
         log.exception("character failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
-
-@router.message(F.text == "⚙️ Настройки")
-async def stub_sections(message: Message, state: FSMContext):
-    try:
-        await state.clear()
-        await message.answer("Скоро", reply_markup=main_menu_kb())
-    except Exception:
-        log.exception("stub_sections failed")
-        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
