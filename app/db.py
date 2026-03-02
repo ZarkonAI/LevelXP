@@ -15,7 +15,7 @@ DEFAULT_STATS = {"strength": 0, "stamina": 0, "athletics": 0}
 
 
 EXERCISE_NAME_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9\- ]+$")
-EXERCISE_NAME_BLOCKLIST = ("http", ".com", "t.me")
+EXERCISE_NAME_BLOCKLIST = ("http", "https", "t.me", ".com", ".ru", ".net", ".org")
 EXERCISE_NAME_STOP_WORDS = ("бляд", "хуй", "пизд", "еба", "ебл", "сук")
 
 
@@ -449,11 +449,81 @@ class Db:
         )
         return int(new_workout_id)
 
+    def update_workout_metrics(
+        self,
+        user_id: int,
+        workout_id: int,
+        total_xp: int,
+        total_sets: int,
+        muscle_delta: Dict[str, int],
+        status: str = "done",
+    ) -> None:
+        payload = {
+            "total_xp": int(max(0, total_xp)),
+            "total_sets": int(max(0, total_sets)),
+            "muscle_delta": muscle_delta if isinstance(muscle_delta, dict) else {},
+            "status": status,
+        }
+        self.client.table("workouts").update(payload).eq("id", workout_id).eq("user_id", user_id).execute()
+
     def toggle_status(self, user_id: int, workout_id: int) -> str:
         card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
         if not card:
             raise RuntimeError("Workout not found")
         new_status = "planned" if card.get("status") == "done" else "done"
+        self.client.table("workouts").update({"status": new_status}).eq("id", workout_id).eq("user_id", user_id).execute()
+        return new_status
+
+    def toggle_workout_status_with_progress(self, user_id: int, workout_id: int) -> str:
+        workout_res = (
+            self.client.table("workouts")
+            .select("id,status,total_xp,total_sets,muscle_delta")
+            .eq("id", workout_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not workout_res.data:
+            raise RuntimeError("Workout not found")
+
+        workout = workout_res.data[0] or {}
+        progress = self.get_progress(user_id)
+
+        workout_xp = self._to_int(workout.get("total_xp"), 0)
+        workout_sets = self._to_int(workout.get("total_sets"), 0)
+        workout_muscles = workout.get("muscle_delta") if isinstance(workout.get("muscle_delta"), dict) else {}
+
+        xp = self._to_int(progress.get("xp"), 0)
+        total_sets = self._to_int(progress.get("total_sets"), 0)
+        workouts_count = self._to_int(progress.get("workouts_count"), 0)
+        muscles = progress.get("muscles") if isinstance(progress.get("muscles"), dict) else {}
+
+        current_status = str(workout.get("status") or "planned")
+        if current_status == "done":
+            new_status = "planned"
+            xp = max(0, xp - workout_xp)
+            total_sets = max(0, total_sets - workout_sets)
+            workouts_count = max(0, workouts_count - 1)
+            for muscle, gain in workout_muscles.items():
+                muscles[muscle] = max(0, self._to_int(muscles.get(muscle), 0) - self._to_int(gain, 0))
+        else:
+            new_status = "done"
+            xp += workout_xp
+            total_sets += workout_sets
+            workouts_count += 1
+            for muscle, gain in workout_muscles.items():
+                muscles[muscle] = self._to_int(muscles.get(muscle), 0) + self._to_int(gain, 0)
+
+        self.client.table("progress").update(
+            {
+                "xp": xp,
+                "total_sets": total_sets,
+                "workouts_count": workouts_count,
+                "muscles": muscles,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("user_id", user_id).execute()
+
         self.client.table("workouts").update({"status": new_status}).eq("id", workout_id).eq("user_id", user_id).execute()
         return new_status
 
@@ -675,7 +745,8 @@ class Db:
 
     def create_workout_from_template(self, user_id: int, template_row: Dict[str, Any], title: Optional[str] = None) -> int:
         workout_title = title or str(template_row.get("name") or "Template")
-        workout_id = self.create_workout(user_id=user_id, title=workout_title, mode="template")
+        workout_date = datetime.now(timezone.utc).date().isoformat()
+        workout_id = self.create_workout(user_id=user_id, title=workout_title, mode="template", workout_date=workout_date, status="planned")
 
         payload = template_row.get("payload") or []
         if not isinstance(payload, list):
@@ -838,6 +909,7 @@ class Db:
             muscles = {}
 
         muscle_gains: List[tuple[str, int]] = []
+        muscle_delta: Dict[str, int] = {}
         for muscle, coeff in muscle_map.items():
             if muscle is None:
                 continue
@@ -846,6 +918,7 @@ class Db:
                 continue
             muscles[muscle] = int(muscles.get(muscle, 0)) + gain
             muscle_gains.append((str(muscle), gain))
+            muscle_delta[str(muscle)] = int(muscle_delta.get(str(muscle), 0)) + int(gain)
 
         def xp_to_next(level: int) -> int:
             return 100 + level * 25
@@ -877,4 +950,6 @@ class Db:
             "xp_new": int(xp_new),
             "xp_to_next": int(xp_to_next(level_new)),
             "muscle_gains_sorted_top3": muscle_gains_sorted_top3,
+            "muscle_delta": muscle_delta,
+            "total_sets_for_workout": sets_val,
         }
