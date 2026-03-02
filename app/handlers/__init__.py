@@ -5,6 +5,7 @@ from app.handlers.settings import router as settings_router
 from app.handlers.start import router as start_router
 from app.handlers.templates import router as templates_router
 from app.handlers.training import router as training_router
+from app.handlers.help import router as help_router
 
 all_routers = [
     start_router,
@@ -14,4 +15,5 @@ all_routers = [
     templates_router,
     settings_router,
     achievements_router,
+    help_router,
 ]

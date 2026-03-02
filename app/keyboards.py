@@ -32,6 +32,7 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🏋️ Тренировка"), KeyboardButton(text="🧬 Персонаж")],
             [KeyboardButton(text="📒 История"), KeyboardButton(text="🔁 Шаблоны")],
             [KeyboardButton(text="🏆 Достижения"), KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="❓ Помощь")],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выбери действие…",
