@@ -154,8 +154,8 @@ def edit_confirm_kb() -> ReplyKeyboardMarkup:
 
 def templates_list_kb(templates: list[dict]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
-    for template in templates:
-        rows.append([KeyboardButton(text=f"🔁 {template.get('name', 'Template')} (#{template.get('id')})")])
+    for idx, template in enumerate(templates, start=1):
+        rows.append([KeyboardButton(text=f"{idx}) {template.get('name', 'Template')}")])
     rows.append([KeyboardButton(text="↩️ В меню")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -163,7 +163,8 @@ def templates_list_kb(templates: list[dict]) -> ReplyKeyboardMarkup:
 def templates_confirm_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✅ Повторить")],
+            [KeyboardButton(text="✅ Применить")],
+            [KeyboardButton(text="✏️ Изменить перед применением")],
             [KeyboardButton(text="↩️ Назад")],
             [KeyboardButton(text="↩️ В меню")],
         ],
