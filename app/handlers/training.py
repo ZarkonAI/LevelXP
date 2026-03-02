@@ -6,17 +6,9 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from app import texts
-from app.keyboards import (
-    back_cancel_kb,
-    confirm_kb,
-    exercises_kb,
-    main_menu_kb,
-    mode_kb,
-    muscle_choice_kb,
-    training_menu_kb,
-)
 from app import db as db_module
+from app import texts
+from app.keyboards import back_cancel_kb, confirm_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb
 from app.states import QuickLogStates
 
 log = logging.getLogger("handlers.training")
@@ -76,19 +68,26 @@ def _extract_pattern_values(raw: str) -> Optional[List[float]]:
     tokens = re.findall(r"\d+(?:[\.,]\d+)?", raw)
     if not tokens:
         return None
+    return [float(token.replace(",", ".")) for token in tokens]
 
-    values: List[float] = []
-    for token in tokens:
-        values.append(float(token.replace(",", ".")))
-    return values
 
-def _prefill_hint(label: str, value: float | int | None, suffix: str = "") -> str:
+def _prefill_hint(value: float | int | None, suffix: str = "") -> str:
     if value is None:
         return ""
     formatted = f"{float(value):g}" if isinstance(value, float) else str(value)
     return f"\nТекущее: {formatted}{suffix}. Введи новое или отправь '.' чтобы оставить как есть"
 
 
+async def _to_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(texts.MENU, reply_markup=main_menu_kb())
+
+
+async def _show_choose_exercise(message: Message, state: FSMContext):
+    data = await state.get_data()
+    exercises = data.get("exercises") or []
+    await state.set_state(QuickLogStates.choose_exercise)
+    await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
 
 
 @router.message(F.text == "🏋️ Тренировка")
@@ -112,21 +111,86 @@ async def quick_log_start(message: Message, state: FSMContext):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text == "↩️ Назад")
-async def back_any(message: Message, state: FSMContext):
+@router.message(F.text == "❌ Отмена")
+async def cancel_anywhere(message: Message, state: FSMContext):
     try:
         current = await state.get_state()
-        if not current:
-            await message.answer(texts.MENU, reply_markup=main_menu_kb())
-            return
-
-        await state.set_state(QuickLogStates.choose_exercise)
-        data = await state.get_data()
-        exercises = data.get("exercises") or []
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+        if current and current.startswith("QuickLogStates:"):
+            await _to_menu(message, state)
     except Exception:
-        log.exception("back_any failed")
+        log.exception("cancel_anywhere failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(QuickLogStates.choose_mode, F.text == "↩️ В меню")
+async def back_from_choose_mode(message: Message, state: FSMContext):
+    await _to_menu(message, state)
+
+
+@router.message(QuickLogStates.choose_exercise, F.text == "↩️ Назад")
+async def back_from_choose_exercise(message: Message, state: FSMContext):
+    await state.set_state(QuickLogStates.choose_mode)
+    await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+
+
+@router.message(QuickLogStates.search_exercise, F.text == "↩️ Назад")
+async def back_from_search(message: Message, state: FSMContext):
+    await _show_choose_exercise(message, state)
+
+
+@router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
+async def back_from_custom_name(message: Message, state: FSMContext):
+    await _show_choose_exercise(message, state)
+
+
+@router.message(QuickLogStates.custom_primary_muscle, F.text == "↩️ Назад")
+async def back_from_custom_primary(message: Message, state: FSMContext):
+    await state.set_state(QuickLogStates.custom_name)
+    await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
+
+
+@router.message(QuickLogStates.enter_weight, F.text == "↩️ Назад")
+async def back_from_weight(message: Message, state: FSMContext):
+    await _show_choose_exercise(message, state)
+
+
+@router.message(QuickLogStates.enter_reps, F.text == "↩️ Назад")
+async def back_from_reps(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(QuickLogStates.enter_weight)
+    await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+
+
+@router.message(QuickLogStates.enter_sets, F.text == "↩️ Назад")
+async def back_from_sets(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(QuickLogStates.enter_reps)
+    await message.answer(f"{texts.ENTER_REPS}{_prefill_hint(data.get('prefill_reps'))}", reply_markup=back_cancel_kb())
+
+
+@router.message(QuickLogStates.enter_rest_single, F.text == "↩️ Назад")
+async def back_from_rest_single(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(QuickLogStates.enter_sets)
+    await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+
+
+@router.message(QuickLogStates.enter_rest_pattern, F.text == "↩️ Назад")
+async def back_from_rest_pattern(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(QuickLogStates.enter_sets)
+    await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+
+
+@router.message(QuickLogStates.confirm, F.text == "↩️ Назад")
+async def back_from_confirm(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("mode") == "pattern":
+        await state.set_state(QuickLogStates.enter_rest_pattern)
+        await message.answer(f"{texts.ENTER_REST_PATTERN}{_prefill_hint(data.get('prefill_rest_pattern_text'), ' мин')}", reply_markup=back_cancel_kb())
+    else:
+        await state.set_state(QuickLogStates.enter_rest_single)
+        await message.answer(f"{texts.ENTER_REST_SINGLE}{_prefill_hint(data.get('prefill_rest_minutes'), ' мин')}", reply_markup=back_cancel_kb())
 
 
 @router.message(QuickLogStates.choose_mode)
@@ -140,7 +204,8 @@ async def choose_mode(message: Message, state: FSMContext, db):
             await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
             return
 
-        exercises = db.list_exercises(limit=12)
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        exercises = db.list_exercises(user_id=int(user["id"]), limit=12)
         await state.update_data(mode=mode, exercises=exercises)
         await state.set_state(QuickLogStates.choose_exercise)
         await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
@@ -150,11 +215,16 @@ async def choose_mode(message: Message, state: FSMContext, db):
 
 
 @router.message(QuickLogStates.choose_exercise)
-async def choose_exercise(message: Message, state: FSMContext):
+async def choose_exercise(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
         exercises = data.get("exercises") or []
         by_name = {exercise.get("name"): exercise for exercise in exercises if exercise.get("name")}
+
+        if message.text == "🔎 Поиск":
+            await state.set_state(QuickLogStates.search_exercise)
+            await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+            return
 
         if message.text == "➕ Своё упражнение":
             await state.set_state(QuickLogStates.custom_name)
@@ -168,9 +238,29 @@ async def choose_exercise(message: Message, state: FSMContext):
 
         await state.update_data(exercise_id=selected["id"], exercise_name=selected["name"])
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint('weight', data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
     except Exception:
         log.exception("choose_exercise failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(QuickLogStates.search_exercise)
+async def search_exercise(message: Message, state: FSMContext, db):
+    try:
+        query = (message.text or "").strip()
+        if not query:
+            await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+            return
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, query=query)
+        if not exercises:
+            await message.answer(texts.SEARCH_EMPTY, reply_markup=back_cancel_kb())
+            return
+        await state.update_data(exercises=exercises)
+        await state.set_state(QuickLogStates.choose_exercise)
+        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+    except Exception:
+        log.exception("search_exercise failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
@@ -205,10 +295,17 @@ async def custom_primary_muscle(message: Message, state: FSMContext, db):
             await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
             return
 
-        exercise = db.create_custom_exercise(exercise_name, primary_muscle)
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        try:
+            exercise = db.create_custom_exercise(int(user["id"]), exercise_name, primary_muscle)
+        except ValueError:
+            await message.answer(texts.ERR_EXERCISE_NAME, reply_markup=back_cancel_kb())
+            await state.set_state(QuickLogStates.custom_name)
+            return
+
         await state.update_data(exercise_id=exercise["id"], exercise_name=exercise["name"], primary_muscle=primary_muscle)
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint('weight', data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
     except Exception:
         log.exception("custom_primary_muscle failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -222,11 +319,7 @@ async def enter_weight(message: Message, state: FSMContext):
         if raw == "." and data.get("prefill_weight") is not None:
             weight = float(data.get("prefill_weight") or 0)
         else:
-            try:
-                weight = _parse_float(raw)
-            except (TypeError, ValueError):
-                await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
-                return
+            weight = _parse_float(raw)
 
         if weight < 0 or weight > 1000:
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
@@ -234,9 +327,9 @@ async def enter_weight(message: Message, state: FSMContext):
 
         await state.update_data(weight=weight)
         await state.set_state(QuickLogStates.enter_reps)
-        data = await state.get_data()
-        hint = _prefill_hint("reps", data.get("prefill_reps"))
-        await message.answer(f"{texts.ENTER_REPS}{hint}", reply_markup=back_cancel_kb())
+        await message.answer(f"{texts.ENTER_REPS}{_prefill_hint(data.get('prefill_reps'))}", reply_markup=back_cancel_kb())
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
         log.exception("enter_weight failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -250,11 +343,7 @@ async def enter_reps(message: Message, state: FSMContext):
         if raw == "." and data.get("prefill_reps") is not None:
             reps = int(data.get("prefill_reps") or 0)
         else:
-            try:
-                reps = int(raw)
-            except (TypeError, ValueError):
-                await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
-                return
+            reps = int(raw)
 
         if reps < 1 or reps > 200:
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
@@ -262,9 +351,9 @@ async def enter_reps(message: Message, state: FSMContext):
 
         await state.update_data(reps=reps)
         await state.set_state(QuickLogStates.enter_sets)
-        data = await state.get_data()
-        hint = _prefill_hint("sets", data.get("prefill_sets"))
-        await message.answer(f"{texts.ENTER_SETS}{hint}", reply_markup=back_cancel_kb())
+        await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
         log.exception("enter_reps failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -278,26 +367,22 @@ async def enter_sets(message: Message, state: FSMContext):
         if raw == "." and data.get("prefill_sets") is not None:
             sets_count = int(data.get("prefill_sets") or 0)
         else:
-            try:
-                sets_count = int(raw)
-            except (TypeError, ValueError):
-                await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
-                return
+            sets_count = int(raw)
 
         if sets_count < 1 or sets_count > 50:
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
             return
 
-        data = await state.get_data()
         await state.update_data(sets_count=sets_count)
         if data.get("mode") == "pattern":
             await state.set_state(QuickLogStates.enter_rest_pattern)
-            hint = _prefill_hint("rest", data.get("prefill_rest_pattern_text"), " мин") if data.get("prefill_rest_pattern_text") else ""
+            hint = _prefill_hint(data.get("prefill_rest_pattern_text"), " мин") if data.get("prefill_rest_pattern_text") else ""
             await message.answer(f"{texts.ENTER_REST_PATTERN}{hint}", reply_markup=back_cancel_kb())
         else:
             await state.set_state(QuickLogStates.enter_rest_single)
-            hint = _prefill_hint("rest", data.get("prefill_rest_minutes"), " мин")
-            await message.answer(f"{texts.ENTER_REST_SINGLE}{hint}", reply_markup=back_cancel_kb())
+            await message.answer(f"{texts.ENTER_REST_SINGLE}{_prefill_hint(data.get('prefill_rest_minutes'), ' мин')}", reply_markup=back_cancel_kb())
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
         log.exception("enter_sets failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -311,11 +396,7 @@ async def enter_rest_single(message: Message, state: FSMContext):
         if raw == "." and data.get("prefill_rest_minutes") is not None:
             minutes = float(data.get("prefill_rest_minutes") or 0)
         else:
-            try:
-                minutes = _parse_float(raw)
-            except (TypeError, ValueError):
-                await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
-                return
+            minutes = _parse_float(raw)
 
         if minutes < 0 or minutes > 30:
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
@@ -324,6 +405,8 @@ async def enter_rest_single(message: Message, state: FSMContext):
         rest_seconds = int(round(minutes * 60))
         await state.update_data(rest_minutes=minutes, rest_seconds=rest_seconds, rest_pattern_seconds=None)
         await _show_confirm(message, state)
+    except (TypeError, ValueError):
+        await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
         log.exception("enter_rest_single failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -348,22 +431,14 @@ async def enter_rest_pattern(message: Message, state: FSMContext):
         if expected_length == 0:
             values = []
 
-        if len(values) != expected_length:
-            await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
-            return
-
-        if any(v < 0 or v > 30 for v in values):
+        if len(values) != expected_length or any(v < 0 or v > 30 for v in values):
             await message.answer(texts.ERR_RANGE, reply_markup=back_cancel_kb())
             return
 
         rest_pattern_seconds = [int(round(v * 60)) for v in values]
         rest_seconds = int(round(sum(rest_pattern_seconds) / len(rest_pattern_seconds))) if rest_pattern_seconds else 0
 
-        await state.update_data(
-            rest_pattern_minutes=values,
-            rest_pattern_seconds=rest_pattern_seconds,
-            rest_seconds=rest_seconds,
-        )
+        await state.update_data(rest_pattern_minutes=values, rest_pattern_seconds=rest_pattern_seconds, rest_seconds=rest_seconds)
         await _show_confirm(message, state)
     except Exception:
         log.exception("enter_rest_pattern failed")
@@ -380,7 +455,6 @@ async def _show_confirm(message: Message, state: FSMContext):
         f"Повторы: {data['reps']}",
         f"Подходы: {data['sets_count']}",
     ]
-
     if data.get("mode") == "pattern":
         minutes_values = data.get("rest_pattern_minutes") or []
         pattern_str = ", ".join(str(v).replace(".", ",") for v in minutes_values) if minutes_values else "—"
@@ -388,27 +462,18 @@ async def _show_confirm(message: Message, state: FSMContext):
     else:
         lines.append(f"Отдых: {str(data.get('rest_minutes', 0)).replace('.', ',')} мин")
 
-    summary = "\n".join(lines)
-    await message.answer(f"{texts.CONFIRM}\n\n{summary}", reply_markup=confirm_kb())
+    await message.answer(f"{texts.CONFIRM}\n\n" + "\n".join(lines), reply_markup=confirm_kb())
 
 
 @router.message(QuickLogStates.confirm, F.text == "✏️ Изменить")
 async def edit_quick_log(message: Message, state: FSMContext):
     try:
         data = await state.get_data()
-        for key in (
-            "weight",
-            "reps",
-            "sets_count",
-            "rest_minutes",
-            "rest_seconds",
-            "rest_pattern_minutes",
-            "rest_pattern_seconds",
-        ):
+        for key in ("weight", "reps", "sets_count", "rest_minutes", "rest_seconds", "rest_pattern_minutes", "rest_pattern_seconds"):
             data.pop(key, None)
         await state.set_data(data)
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint('weight', data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
     except Exception:
         log.exception("edit_quick_log failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -418,43 +483,31 @@ async def edit_quick_log(message: Message, state: FSMContext):
 async def save_quick_log(message: Message, state: FSMContext, db):
     current_state = await state.get_state()
     if not current_state:
-        log.info("save_quick_log ignored: state already cleared")
         return
-
     data = await state.get_data()
     if data.get("saved"):
-        log.info("save_quick_log ignored: already saved")
         return
-
     await state.update_data(saved=True)
 
     try:
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         db.ensure_progress(user["id"])
-
-        workout_title = _build_workout_title(data)
         workout_id = db.create_workout(
             user["id"],
-            title=workout_title,
+            title=_build_workout_title(data),
             mode=data["mode"],
             status="planned" if data.get("repeat_source_workout_id") else "done",
             source_workout_id=int(data["repeat_source_workout_id"]) if data.get("repeat_source_workout_id") else None,
         )
-        try:
-            item_id = db.create_workout_item(workout_id, int(data["exercise_id"]), order_index=1)
-            db.create_set(
-                workout_item_id=item_id,
-                weight=float(data["weight"]),
-                reps=int(data["reps"]),
-                sets_count=int(data["sets_count"]),
-                rest_seconds=int(data["rest_seconds"]),
-                rest_pattern_seconds=data.get("rest_pattern_seconds"),
-            )
-        except Exception:
-            log.exception("save_quick_log failed while inserting workout_items/sets")
-            await state.clear()
-            await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-            return
+        item_id = db.create_workout_item(workout_id, int(data["exercise_id"]), order_index=1)
+        db.create_set(
+            workout_item_id=item_id,
+            weight=float(data["weight"]),
+            reps=int(data["reps"]),
+            sets_count=int(data["sets_count"]),
+            rest_seconds=int(data["rest_seconds"]),
+            rest_pattern_seconds=data.get("rest_pattern_seconds"),
+        )
     except Exception:
         log.exception("save_quick_log failed")
         await state.clear()
@@ -470,15 +523,7 @@ async def save_quick_log(message: Message, state: FSMContext, db):
             sets_count=int(data["sets_count"]),
         )
         top = award.get("muscle_gains_sorted_top3") or []
-        if top:
-            lines = [
-                f"- {MUSCLE_LABELS.get(muscle, '🏋️ Нагрузка')}: +{gain}"
-                for muscle, gain in top
-            ]
-            pump_text = "\n".join(lines)
-        else:
-            pump_text = "- 🏋️ Общая нагрузка учтена"
-
+        pump_text = "\n".join([f"- {MUSCLE_LABELS.get(m, '🏋️ Нагрузка')}: +{g}" for m, g in top]) if top else "- 🏋️ Общая нагрузка учтена"
         reward_text = (
             "<b>LevelXP · Награда</b>\n"
             f"+<b>{award['xp_gain']} XP</b> | Уровень: <b>{award['level_new']}</b>\n"
@@ -492,10 +537,7 @@ async def save_quick_log(message: Message, state: FSMContext, db):
 
         new_achievements = db.check_and_award_achievements(int(user["id"]))
         if new_achievements:
-            lines = [
-                texts.ACHIEVEMENT_UNLOCKED.format(name=db_module.ACHIEVEMENTS_META.get(achievement_id, achievement_id))
-                for achievement_id in new_achievements
-            ]
+            lines = [texts.ACHIEVEMENT_UNLOCKED.format(name=db_module.ACHIEVEMENTS_META.get(aid, aid)) for aid in new_achievements]
             await message.answer("\n".join(lines), reply_markup=main_menu_kb())
     except Exception:
         log.exception("award_and_update_progress failed")
@@ -505,8 +547,4 @@ async def save_quick_log(message: Message, state: FSMContext, db):
 
 @router.message(QuickLogStates.confirm)
 async def confirm_fallback(message: Message):
-    try:
-        await message.answer(texts.CONFIRM, reply_markup=confirm_kb())
-    except Exception:
-        log.exception("confirm_fallback failed")
-        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+    await message.answer(texts.CONFIRM, reply_markup=confirm_kb())

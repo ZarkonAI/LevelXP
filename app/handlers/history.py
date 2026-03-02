@@ -53,6 +53,11 @@ def _extract_pattern_values(raw: str) -> Optional[List[float]]:
     return [float(token.replace(",", ".")) for token in tokens]
 
 
+
+
+def _strip_tech_id(value: str | None) -> str:
+    return re.sub(r"\s*\(#\d+\)", "", str(value or "")).strip()
+
 def _status_text(status: str | None) -> str:
     return texts.STATUS_DONE if status == "done" else texts.STATUS_PLANNED
 
@@ -64,7 +69,7 @@ async def _render_card(message: Message, state: FSMContext, db, user_id: int, wo
         return
 
     lines = [
-        f"<b>{_parse_date(card.get('workout_date'))}</b> — <b>{card.get('title') or 'Тренировка'}</b>",
+        f"<b>{_parse_date(card.get('workout_date'))}</b> — <b>{_strip_tech_id(card.get('title') or 'Тренировка')}</b>",
         f"Статус: {_status_text(card.get('status'))}",
         f"Упражнение: {card.get('exercise_name') or 'Упражнение'}",
         f"Вес: {float(card.get('weight') or 0):g} кг",

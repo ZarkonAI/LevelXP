@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,11 @@ log = logging.getLogger("db")
 
 DEFAULT_MUSCLES = {"legs": 0, "back": 0, "chest": 0, "shoulders": 0, "arms": 0, "core": 0}
 DEFAULT_STATS = {"strength": 0, "stamina": 0, "athletics": 0}
+
+
+EXERCISE_NAME_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9\- ]+$")
+EXERCISE_NAME_BLOCKLIST = ("http", ".com", "t.me")
+EXERCISE_NAME_STOP_WORDS = ("бляд", "хуй", "пизд", "еба", "ебл", "сук")
 
 
 ACHIEVEMENTS_META = {
@@ -188,41 +194,71 @@ class Db:
             raise RuntimeError("Exercise not found")
         return res.data[0]
 
-    def list_exercises(self, limit: int = 12) -> List[Dict[str, Any]]:
-        now = datetime.now(timezone.utc)
-        cached_data = self._ex_cache.get("data")
-        expires_at = self._ex_cache.get("expires_at")
+    def _validate_exercise_name(self, name: str) -> Optional[str]:
+        clean = (name or "").strip()
+        if len(clean) < 2 or len(clean) > 60:
+            return "length"
 
-        if cached_data is not None and isinstance(expires_at, datetime) and expires_at > now:
-            return list(cached_data)[:limit]
+        low = clean.lower()
+        if any(token in low for token in EXERCISE_NAME_BLOCKLIST):
+            return "links"
+        if any(token in low for token in EXERCISE_NAME_STOP_WORDS):
+            return "stop_word"
+        if not EXERCISE_NAME_RE.fullmatch(clean):
+            return "symbols"
+        return None
 
-        res = (
-            self.client.table("exercises")
-            .select("id,name,primary_muscle,muscle_map")
-            .order("created_at", desc=True)
-            .execute()
-        )
-        data = res.data or []
-        self._ex_cache = {"data": data, "expires_at": now + timedelta(minutes=10)}
-        return data[:limit]
+    def list_exercises(self, user_id: int, limit: int = 12, query: Optional[str] = None) -> List[Dict[str, Any]]:
+        query_builder = self.client.table("exercises").select("id,name,primary_muscle,muscle_map,owner_user_id,created_at")
+        query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
 
-    def create_custom_exercise(self, name: str, primary_muscle: str) -> Dict[str, Any]:
+        search_query = (query or "").strip()
+        if search_query:
+            query_builder = query_builder.ilike("name", f"%{search_query}%")
+
+        res = query_builder.order("created_at", desc=True).limit(max(limit * 4, limit)).execute()
+        rows = res.data or []
+        globals_rows = [row for row in rows if row.get("owner_user_id") is None]
+        custom_rows = [row for row in rows if row.get("owner_user_id") is not None]
+        globals_rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+        custom_rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+        rows = globals_rows + custom_rows
+
+        normalized = [
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "primary_muscle": row.get("primary_muscle"),
+                "muscle_map": row.get("muscle_map"),
+            }
+            for row in rows
+        ]
+        return normalized[:limit]
+
+    def create_custom_exercise(self, user_id: int, name: str, primary_muscle: str) -> Dict[str, Any]:
+        reason = self._validate_exercise_name(name)
+        if reason:
+            raise ValueError("ERR_EXERCISE_NAME")
+
+        clean_name = (name or "").strip()
         payload = {
-            "name": name,
+            "name": clean_name,
             "category": "custom",
             "primary_muscle": primary_muscle,
             "muscle_map": {primary_muscle: 1.0},
+            "owner_user_id": user_id,
         }
         res = self.client.table("exercises").insert(payload).execute()
         self._ex_cache = {"data": None, "expires_at": None}
         if res.data and res.data[0].get("id") is not None:
-            return {"id": res.data[0]["id"], "name": res.data[0].get("name", name)}
+            return {"id": res.data[0]["id"], "name": res.data[0].get("name", clean_name)}
 
         fallback = (
             self.client.table("exercises")
             .select("id,name")
-            .eq("name", name)
+             .eq("name", clean_name)
             .eq("primary_muscle", primary_muscle)
+            .eq("owner_user_id", user_id)
             .order("created_at", desc=True)
             .limit(1)
             .execute()
