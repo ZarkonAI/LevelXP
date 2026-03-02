@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
@@ -10,6 +11,11 @@ def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardBut
         rows.append([KeyboardButton(text=text) for text in chunk])
     return rows
 
+
+
+
+def _strip_tech_id(text: str) -> str:
+    return re.sub(r"\s*\(#\d+\)", "", text or "").strip()
 
 def _format_date(raw_date: str | None) -> str:
     if not raw_date:
@@ -99,7 +105,7 @@ def confirm_kb() -> ReplyKeyboardMarkup:
 def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
     names = [str(exercise.get("name", "")) for exercise in exercises if exercise.get("name")]
     keyboard = _build_rows(names, row_width=2)
-    keyboard.append([KeyboardButton(text="➕ Своё упражнение")])
+    keyboard.append([KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")])
     keyboard.append([KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")])
 
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -108,7 +114,7 @@ def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
 def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for idx, workout in enumerate(workouts[:10], start=1):
-        title = workout.get("title") or "Тренировка"
+        title = _strip_tech_id(str(workout.get("title") or "Тренировка"))
         workout_date = _format_date(workout.get("workout_date"))
         rows.append([KeyboardButton(text=f"{idx}) {workout_date} · {title}")])
     rows.append([KeyboardButton(text="↩️ В меню")])
