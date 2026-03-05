@@ -116,7 +116,7 @@ class Db:
 
         res = (
             self.client.table("users")
-            .select("id,telegram_id,username,units,timezone")
+            .select("id,telegram_id,username,units,timezone,ui_mode")
             .eq("telegram_id", telegram_id)
             .limit(1)
             .execute()
@@ -875,6 +875,23 @@ class Db:
 
     def update_user_timezone(self, user_id: int, timezone_value: str) -> None:
         self.client.table("users").update({"timezone": timezone_value}).eq("id", user_id).execute()
+
+    def get_user_ui_mode(self, user_id: int) -> str:
+        try:
+            res = self.client.table("users").select("ui_mode").eq("id", user_id).limit(1).execute()
+            if not res.data:
+                return "full"
+            value = str(res.data[0].get("ui_mode") or "full").strip().lower()
+            return value if value in {"full", "compact"} else "full"
+        except Exception:
+            log.exception("get_user_ui_mode failed")
+            return "full"
+
+    def set_user_ui_mode(self, user_id: int, mode: str) -> None:
+        normalized = str(mode or "full").strip().lower()
+        if normalized not in {"full", "compact"}:
+            normalized = "full"
+        self.client.table("users").update({"ui_mode": normalized}).eq("id", user_id).execute()
 
     def list_templates(self, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
         res = (

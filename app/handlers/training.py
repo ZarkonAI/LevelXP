@@ -4,6 +4,8 @@ from typing import List, Optional
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
+
+from app.ui_helpers import send_or_replace_work_message
 from app import db as db_module
 from app import texts
 from app.keyboards import back_cancel_kb, confirm_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb
@@ -57,6 +59,22 @@ def _prefill_hint(value: float | int | None, suffix: str = "") -> str:
         return ""
     formatted = f"{float(value):g}" if isinstance(value, float) else str(value)
     return f"\nТекущее: {formatted}{suffix}. Введи новое или отправь '.' чтобы оставить как есть"
+
+
+async def _is_compact_mode(message: Message, db) -> bool:
+    try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        return db.get_user_ui_mode(int(user["id"])) == "compact"
+    except Exception:
+        log.exception("_is_compact_mode failed")
+        return False
+
+
+async def _send_step_prompt(message: Message, state: FSMContext, db, text: str, reply_markup):
+    if await _is_compact_mode(message, db):
+        await send_or_replace_work_message(message, state, text)
+    else:
+        await message.answer(text, reply_markup=reply_markup)
 def _validate_name(name: str) -> bool:
     clean = (name or "").strip()
     if len(clean) < 2 or len(clean) > 60:
@@ -69,11 +87,14 @@ def _validate_name(name: str) -> bool:
 async def _to_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(texts.MENU, reply_markup=main_menu_kb())
-async def _show_choose_exercise(message: Message, state: FSMContext):
+async def _show_choose_exercise(message: Message, state: FSMContext, db):
     data = await state.get_data()
     exercises = data.get("exercises") or []
     await state.set_state(QuickLogStates.choose_exercise)
-    await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+    if await _is_compact_mode(message, db):
+        await send_or_replace_work_message(message, state, texts.CHOOSE_EXERCISE)
+    else:
+        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
 @router.message(F.text == "🏋️ Тренировка")
 async def training_menu(message: Message, state: FSMContext):
     try:
@@ -83,11 +104,11 @@ async def training_menu(message: Message, state: FSMContext):
         log.exception("training_menu failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 @router.message(F.text == "⚡ Быстрая запись")
-async def quick_log_start(message: Message, state: FSMContext):
+async def quick_log_start(message: Message, state: FSMContext, db):
     try:
         await state.clear()
         await state.set_state(QuickLogStates.choose_mode)
-        await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+        await _send_step_prompt(message, state, db, texts.CHOOSE_MODE, mode_kb())
     except Exception:
         log.exception("quick_log_start failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -104,51 +125,51 @@ async def cancel_anywhere(message: Message, state: FSMContext):
 async def back_from_choose_mode(message: Message, state: FSMContext):
     await _to_menu(message, state)
 @router.message(QuickLogStates.choose_exercise, F.text == "↩️ Назад")
-async def back_from_choose_exercise(message: Message, state: FSMContext):
+async def back_from_choose_exercise(message: Message, state: FSMContext, db):
     await state.set_state(QuickLogStates.choose_mode)
-    await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+    await _send_step_prompt(message, state, db, texts.CHOOSE_MODE, mode_kb())
 @router.message(QuickLogStates.search_exercise, F.text == "↩️ Назад")
-async def back_from_search(message: Message, state: FSMContext):
-    await _show_choose_exercise(message, state)
+async def back_from_search(message: Message, state: FSMContext, db):
+    await _show_choose_exercise(message, state, db)
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
-async def back_from_custom_name(message: Message, state: FSMContext):
-    await _show_choose_exercise(message, state)
+async def back_from_custom_name(message: Message, state: FSMContext, db):
+    await _show_choose_exercise(message, state, db)
 @router.message(QuickLogStates.custom_primary_muscle, F.text == "↩️ Назад")
 async def back_from_custom_primary(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.custom_name)
     await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
 @router.message(QuickLogStates.enter_weight, F.text == "↩️ Назад")
-async def back_from_weight(message: Message, state: FSMContext):
-    await _show_choose_exercise(message, state)
+async def back_from_weight(message: Message, state: FSMContext, db):
+    await _show_choose_exercise(message, state, db)
 @router.message(QuickLogStates.enter_reps, F.text == "↩️ Назад")
-async def back_from_reps(message: Message, state: FSMContext):
+async def back_from_reps(message: Message, state: FSMContext, db):
     data = await state.get_data()
     await state.set_state(QuickLogStates.enter_weight)
-    await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+    await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_WEIGHT}\n{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", back_cancel_kb())
 @router.message(QuickLogStates.enter_sets, F.text == "↩️ Назад")
-async def back_from_sets(message: Message, state: FSMContext):
+async def back_from_sets(message: Message, state: FSMContext, db):
     data = await state.get_data()
     await state.set_state(QuickLogStates.enter_reps)
-    await message.answer(f"{texts.ENTER_REPS}{_prefill_hint(data.get('prefill_reps'))}", reply_markup=back_cancel_kb())
+    await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_REPS}\n{texts.ENTER_REPS}{_prefill_hint(data.get('prefill_reps'))}", back_cancel_kb())
 @router.message(QuickLogStates.enter_rest_single, F.text == "↩️ Назад")
-async def back_from_rest_single(message: Message, state: FSMContext):
+async def back_from_rest_single(message: Message, state: FSMContext, db):
     data = await state.get_data()
     await state.set_state(QuickLogStates.enter_sets)
-    await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+    await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_SETS}\n{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", back_cancel_kb())
 @router.message(QuickLogStates.enter_rest_pattern, F.text == "↩️ Назад")
-async def back_from_rest_pattern(message: Message, state: FSMContext):
+async def back_from_rest_pattern(message: Message, state: FSMContext, db):
     data = await state.get_data()
     await state.set_state(QuickLogStates.enter_sets)
-    await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+    await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_SETS}\n{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", back_cancel_kb())
 @router.message(QuickLogStates.confirm, F.text == "↩️ Назад")
-async def back_from_confirm(message: Message, state: FSMContext):
+async def back_from_confirm(message: Message, state: FSMContext, db):
     data = await state.get_data()
     if data.get("mode") == "pattern":
         await state.set_state(QuickLogStates.enter_rest_pattern)
-        await message.answer(f"{texts.ENTER_REST_PATTERN}{_prefill_hint(data.get('prefill_rest_pattern_text'), ' мин')}", reply_markup=back_cancel_kb())
+        await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_REST}\n{texts.ENTER_REST_PATTERN}{_prefill_hint(data.get('prefill_rest_pattern_text'), ' мин')}", back_cancel_kb())
     else:
         await state.set_state(QuickLogStates.enter_rest_single)
-        await message.answer(f"{texts.ENTER_REST_SINGLE}{_prefill_hint(data.get('prefill_rest_minutes'), ' мин')}", reply_markup=back_cancel_kb())
+        await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_REST}\n{texts.ENTER_REST_SINGLE}{_prefill_hint(data.get('prefill_rest_minutes'), ' мин')}", back_cancel_kb())
 @router.message(QuickLogStates.choose_mode)
 async def choose_mode(message: Message, state: FSMContext, db):
     try:
@@ -163,7 +184,10 @@ async def choose_mode(message: Message, state: FSMContext, db):
         exercises = db.list_exercises(user_id=int(user["id"]), limit=12)
         await state.update_data(mode=mode, exercises=exercises)
         await state.set_state(QuickLogStates.choose_exercise)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+        if await _is_compact_mode(message, db):
+            await send_or_replace_work_message(message, state, texts.CHOOSE_EXERCISE)
+        else:
+            await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
     except Exception:
         log.exception("choose_mode failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -183,11 +207,14 @@ async def choose_exercise(message: Message, state: FSMContext, db):
             return
         selected = by_name.get(message.text)
         if not selected:
-            await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+            if await _is_compact_mode(message, db):
+                await send_or_replace_work_message(message, state, texts.CHOOSE_EXERCISE)
+            else:
+                await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
             return
         await state.update_data(exercise_id=selected["id"], exercise_name=selected["name"])
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_WEIGHT}\n{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", back_cancel_kb())
     except Exception:
         log.exception("choose_exercise failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -205,7 +232,10 @@ async def search_exercise(message: Message, state: FSMContext, db):
             return
         await state.update_data(exercises=exercises)
         await state.set_state(QuickLogStates.choose_exercise)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+        if await _is_compact_mode(message, db):
+            await send_or_replace_work_message(message, state, texts.CHOOSE_EXERCISE)
+        else:
+            await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
     except Exception:
         log.exception("search_exercise failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -248,7 +278,7 @@ async def custom_primary_muscle(message: Message, state: FSMContext, db):
             return
         await state.update_data(exercise_id=exercise["id"], exercise_name=exercise["name"], primary_muscle=primary_muscle)
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_WEIGHT}\n{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", back_cancel_kb())
     except Exception:
         log.exception("custom_primary_muscle failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -266,7 +296,7 @@ async def enter_weight(message: Message, state: FSMContext):
             return
         await state.update_data(weight=weight)
         await state.set_state(QuickLogStates.enter_reps)
-        await message.answer(f"{texts.ENTER_REPS}{_prefill_hint(data.get('prefill_reps'))}", reply_markup=back_cancel_kb())
+        await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_REPS}\n{texts.ENTER_REPS}{_prefill_hint(data.get('prefill_reps'))}", back_cancel_kb())
     except (TypeError, ValueError):
         await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
@@ -286,7 +316,7 @@ async def enter_reps(message: Message, state: FSMContext):
             return
         await state.update_data(reps=reps)
         await state.set_state(QuickLogStates.enter_sets)
-        await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+        await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_SETS}\n{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", back_cancel_kb())
     except (TypeError, ValueError):
         await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
@@ -308,10 +338,10 @@ async def enter_sets(message: Message, state: FSMContext):
         if data.get("mode") == "pattern":
             await state.set_state(QuickLogStates.enter_rest_pattern)
             hint = _prefill_hint(data.get("prefill_rest_pattern_text"), " мин") if data.get("prefill_rest_pattern_text") else ""
-            await message.answer(f"{texts.ENTER_REST_PATTERN}{hint}", reply_markup=back_cancel_kb())
+            await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_REST}\n{texts.ENTER_REST_PATTERN}{hint}", back_cancel_kb())
         else:
             await state.set_state(QuickLogStates.enter_rest_single)
-            await message.answer(f"{texts.ENTER_REST_SINGLE}{_prefill_hint(data.get('prefill_rest_minutes'), ' мин')}", reply_markup=back_cancel_kb())
+            await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_REST}\n{texts.ENTER_REST_SINGLE}{_prefill_hint(data.get('prefill_rest_minutes'), ' мин')}", back_cancel_kb())
     except (TypeError, ValueError):
         await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
@@ -331,7 +361,7 @@ async def enter_rest_single(message: Message, state: FSMContext):
             return
         rest_seconds = int(round(minutes * 60))
         await state.update_data(rest_minutes=minutes, rest_seconds=rest_seconds, rest_pattern_seconds=None)
-        await _show_confirm(message, state)
+        await _show_confirm(message, state, db)
     except (TypeError, ValueError):
         await message.answer(texts.ERR_NUMBER, reply_markup=back_cancel_kb())
     except Exception:
@@ -359,11 +389,11 @@ async def enter_rest_pattern(message: Message, state: FSMContext):
         rest_pattern_seconds = [int(round(v * 60)) for v in values]
         rest_seconds = int(round(sum(rest_pattern_seconds) / len(rest_pattern_seconds))) if rest_pattern_seconds else 0
         await state.update_data(rest_pattern_minutes=values, rest_pattern_seconds=rest_pattern_seconds, rest_seconds=rest_seconds)
-        await _show_confirm(message, state)
+        await _show_confirm(message, state, db)
     except Exception:
         log.exception("enter_rest_pattern failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-async def _show_confirm(message: Message, state: FSMContext):
+async def _show_confirm(message: Message, state: FSMContext, db):
     data = await state.get_data()
     await state.set_state(QuickLogStates.confirm)
     lines = [
@@ -378,16 +408,20 @@ async def _show_confirm(message: Message, state: FSMContext):
         lines.append(f"Отдых по подходам: {pattern_str}")
     else:
         lines.append(f"Отдых: {str(data.get('rest_minutes', 0)).replace('.', ',')} мин")
-    await message.answer(f"{texts.CONFIRM}\n\n" + "\n".join(lines), reply_markup=confirm_kb())
+    text = f"{texts.CONFIRM}\n\n" + "\n".join(lines)
+    if await _is_compact_mode(message, db):
+        await send_or_replace_work_message(message, state, text)
+    else:
+        await message.answer(text, reply_markup=confirm_kb())
 @router.message(QuickLogStates.confirm, F.text == "✏️ Изменить")
-async def edit_quick_log(message: Message, state: FSMContext):
+async def edit_quick_log(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
         for key in ("weight", "reps", "sets_count", "rest_minutes", "rest_seconds", "rest_pattern_minutes", "rest_pattern_seconds"):
             data.pop(key, None)
         await state.set_data(data)
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await _send_step_prompt(message, state, db, f"{texts.COMPACT_STEP_WEIGHT}\n{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", back_cancel_kb())
     except Exception:
         log.exception("edit_quick_log failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -514,7 +548,14 @@ async def save_quick_log(message: Message, state: FSMContext, db):
                 f"{pump_text}\n\n"
                 "Прогресс засчитан."
             )
+        compact_mode = await _is_compact_mode(message, db)
+        state_data = await state.get_data()
         await state.clear()
+        if compact_mode and state_data.get("work_message_id"):
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=int(state_data["work_message_id"]))
+            except Exception:
+                log.exception("delete work message failed")
         await message.answer(reward_text, reply_markup=main_menu_kb())
         new_achievements = db.check_and_award_achievements(int(user["id"]))
         if new_achievements:

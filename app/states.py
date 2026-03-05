@@ -37,6 +37,7 @@ class EditWorkoutStates(StatesGroup):
 class SettingsStates(StatesGroup):
     units_menu = State()
     waiting_timezone = State()
+    ui_mode_menu = State()
 
 
 class TemplateBrowseStates(StatesGroup):

@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
 
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
 def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardButton]]:
@@ -199,6 +199,7 @@ def settings_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="⚖️ Единицы")],
             [KeyboardButton(text="🕒 Часовой пояс")],
+            [KeyboardButton(text="🧾 Режим интерфейса")],
             [KeyboardButton(text="↩️ В меню")],
         ],
         resize_keyboard=True,
@@ -212,4 +213,54 @@ def units_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
         ],
         resize_keyboard=True,
+    )
+
+
+def ui_mode_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Полный"), KeyboardButton(text="Компактный")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def history_list_inline_kb(workouts: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, workout in enumerate(workouts[:10], start=1):
+        title = _strip_tech_id(str(workout.get("title") or "Тренировка"))
+        workout_date = _format_date(workout.get("workout_date"))
+        rows.append([InlineKeyboardButton(text=f"{idx}) {workout_date} · {title}", callback_data=f"history:open:{workout.get('id')}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def history_action_inline_kb(workout_id: int, status: str | None) -> InlineKeyboardMarkup:
+    status_button = "✅ Статус" if status != "done" else "☑️ Статус"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Повторить", callback_data=f"history:repeat:{workout_id}")],
+            [InlineKeyboardButton(text="✏️ Исправить", callback_data=f"history:edit:{workout_id}")],
+            [InlineKeyboardButton(text=status_button, callback_data=f"history:status:{workout_id}")],
+            [InlineKeyboardButton(text="💾 Шаблон", callback_data=f"history:template:{workout_id}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="history:back")],
+        ]
+    )
+
+
+def templates_list_inline_kb(templates: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for row in templates:
+        t_id = int(row.get("id"))
+        rows.append([InlineKeyboardButton(text=str(row.get("name") or "Template"), callback_data=f"templates:open:{t_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def templates_confirm_inline_kb(template_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Применить", callback_data=f"templates:apply:{template_id}")],
+            [InlineKeyboardButton(text="✏️ Изменить перед применением", callback_data=f"templates:edit:{template_id}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="templates:back")],
+        ]
     )

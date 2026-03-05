@@ -6,19 +6,22 @@ from typing import List, Optional
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from app import texts
 from app.keyboards import (
     back_cancel_kb,
     back_menu_kb,
     confirm_edit_kb,
+    history_action_inline_kb,
     history_action_kb,
+    history_list_inline_kb,
     history_list_kb,
     main_menu_kb,
     repeat_options_kb,
 )
 from app.states import EditWorkoutStates, HistoryStates, QuickLogStates, TemplateStates
+from app.ui_helpers import send_or_replace_work_message
 
 log = logging.getLogger("handlers.history")
 router = Router()
@@ -88,6 +91,40 @@ async def _render_card(message: Message, state: FSMContext, db, user_id: int, wo
     await message.answer("\n".join(lines), reply_markup=history_action_kb(card.get("status")))
 
 
+async def _is_compact_mode(message: Message, db) -> bool:
+    try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        return db.get_user_ui_mode(int(user["id"])) == "compact"
+    except Exception:
+        log.exception("history _is_compact_mode failed")
+        return False
+
+
+async def _render_card_compact(source: Message | CallbackQuery, state: FSMContext, db, user_id: int, workout_id: int):
+    card = db.get_workout_card(user_id=user_id, workout_id=workout_id)
+    if not card:
+        await send_or_replace_work_message(source, state, texts.TECH_ERROR)
+        return
+
+    lines = [
+        f"<b>{_parse_date(card.get('workout_date'))}</b> — <b>{_strip_tech_id(card.get('title') or 'Тренировка')}</b>",
+        f"Статус: {_status_text(card.get('status'))}",
+        f"Упражнение: {card.get('exercise_name') or 'Упражнение'}",
+        f"Вес: {float(card.get('weight') or 0):g} кг",
+        f"Повторы: {int(card.get('reps') or 0)}",
+        f"Подходы: {int(card.get('sets_count') or 0)}",
+        f"Отдых: {_format_rest_minutes(card.get('rest_seconds'))} мин",
+    ]
+    await state.update_data(selected_workout_id=workout_id, mode=card.get("mode"))
+    await state.set_state(HistoryStates.viewing_card)
+    await send_or_replace_work_message(source, state, "\n".join(lines), history_action_inline_kb(workout_id, card.get("status")))
+
+
+async def _render_history_list_compact(source: Message | CallbackQuery, state: FSMContext, workouts: list[dict]):
+    await state.set_state(HistoryStates.browsing_list)
+    await send_or_replace_work_message(source, state, texts.HISTORY_TITLE, history_list_inline_kb(workouts))
+
+
 
 
 @router.message(F.text == "↩️ В меню")
@@ -113,10 +150,72 @@ async def open_history(message: Message, state: FSMContext, db):
         history_map = {str(idx): int(workout["id"]) for idx, workout in enumerate(workouts[:10], start=1)}
         await state.update_data(history_map=history_map, history_workouts=workouts, last_workouts_count=len(workouts))
         await state.set_state(HistoryStates.browsing_list)
-        await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(workouts))
+        if await _is_compact_mode(message, db):
+            await _render_history_list_compact(message, state, workouts)
+        else:
+            await message.answer(texts.HISTORY_TITLE, reply_markup=history_list_kb(workouts))
     except Exception:
         log.exception("open_history failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.callback_query(F.data.startswith("history:"))
+async def history_compact_callbacks(callback: CallbackQuery, state: FSMContext, db):
+    try:
+        data = callback.data or ""
+        user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+        mode = db.get_user_ui_mode(int(user["id"]))
+        if mode != "compact":
+            await callback.answer()
+            return
+
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        workout_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+
+        state_data = await state.get_data()
+        workouts = state_data.get("history_workouts") or db.list_workouts(user_id=int(user["id"]), limit=10)
+
+        if action == "open" and workout_id:
+            await _render_card_compact(callback, state, db, int(user["id"]), workout_id)
+        elif action == "back":
+            await _render_history_list_compact(callback, state, workouts)
+        elif action == "status" and workout_id:
+            db.toggle_workout_status_with_progress(user_id=int(user["id"]), workout_id=workout_id)
+            await _render_card_compact(callback, state, db, int(user["id"]), workout_id)
+        elif action == "repeat" and workout_id:
+            db.ensure_progress(int(user["id"]))
+            new_workout_id = db.clone_workout_as_new(user_id=int(user["id"]), workout_id=workout_id)
+            card = db.get_workout_card(user_id=int(user["id"]), workout_id=int(new_workout_id))
+            award = db.award_and_update_progress(
+                user_id=int(user["id"]),
+                exercise_id=int(card.get("exercise_id") or 0),
+                weight=float(card.get("weight") or 0),
+                reps=int(card.get("reps") or 0),
+                sets_count=int(card.get("sets_count") or 0),
+            )
+            db.update_workout_metrics(
+                user_id=int(user["id"]),
+                workout_id=int(new_workout_id),
+                total_xp=int(award.get("xp_gain") or 0),
+                total_sets=int(award.get("total_sets_for_workout") or 0),
+                muscle_delta=award.get("muscle_delta") if isinstance(award.get("muscle_delta"), dict) else {},
+                status="done",
+            )
+            await callback.answer("Повторил")
+            await callback.message.answer(texts.REPEAT_DONE, reply_markup=main_menu_kb())
+        elif action == "template" and workout_id:
+            await state.update_data(selected_workout_id=workout_id)
+            await state.set_state(TemplateStates.waiting_name)
+            await callback.message.answer(texts.ASK_TEMPLATE_NAME, reply_markup=back_menu_kb())
+        elif action == "edit" and workout_id:
+            await state.update_data(selected_workout_id=workout_id)
+            await state.set_state(EditWorkoutStates.waiting_weight)
+            await callback.message.answer(texts.EDIT_START, reply_markup=back_cancel_kb())
+        await callback.answer()
+    except Exception:
+        log.exception("history_compact_callbacks failed")
+        await callback.answer()
 
 
 @router.message(HistoryStates.browsing_list, F.text.regexp(INDEX_RE.pattern))

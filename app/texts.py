@@ -60,7 +60,14 @@ VERSION = "LevelXP v1.0"
 
 ACHIEVEMENTS_EMPTY = "Пока достижений нет. Запиши тренировку, чтобы открыть первое."
 
-SETTINGS_TEXT = "<b>⚙️ Настройки</b>\nЕдиницы: <b>{units}</b>\nЧасовой пояс: <b>{timezone}</b>"
+SETTINGS_TEXT = "<b>⚙️ Настройки</b>\nЕдиницы: <b>{units}</b>\nЧасовой пояс: <b>{timezone}</b>\nРежим интерфейса: <b>{ui_mode}</b>"
 SETTINGS_UNITS_PROMPT = "Выбери единицы измерения:"
 SETTINGS_TIMEZONE_PROMPT = "Введи часовой пояс в формате UTC+2 или UTC-5."
 SETTINGS_TIMEZONE_INVALID = "Неверный формат. Используй UTC+2 или UTC-5."
+SETTINGS_UI_MODE_PROMPT = "Выбери режим интерфейса:"
+SETTINGS_UI_MODE_SAVED = "Режим интерфейса обновлён: <b>{ui_mode}</b>."
+
+COMPACT_STEP_WEIGHT = "Шаг 1/4: введи вес"
+COMPACT_STEP_REPS = "Шаг 2/4: введи повторы"
+COMPACT_STEP_SETS = "Шаг 3/4: введи подходы"
+COMPACT_STEP_REST = "Шаг 4/4: введи отдых"
