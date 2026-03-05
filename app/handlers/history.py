@@ -167,7 +167,24 @@ async def repeat_from_history_exact(message: Message, state: FSMContext, db):
             return
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        db.clone_workout_as_new(user_id=int(user["id"]), workout_id=int(selected_workout_id))
+        db.ensure_progress(int(user["id"]))
+        new_workout_id = db.clone_workout_as_new(user_id=int(user["id"]), workout_id=int(selected_workout_id))
+        card = db.get_workout_card(user_id=int(user["id"]), workout_id=int(new_workout_id))
+        award = db.award_and_update_progress(
+            user_id=int(user["id"]),
+            exercise_id=int(card.get("exercise_id") or 0),
+            weight=float(card.get("weight") or 0),
+            reps=int(card.get("reps") or 0),
+            sets_count=int(card.get("sets_count") or 0),
+        )
+        db.update_workout_metrics(
+            user_id=int(user["id"]),
+            workout_id=int(new_workout_id),
+            total_xp=int(award.get("xp_gain") or 0),
+            total_sets=int(award.get("total_sets_for_workout") or 0),
+            muscle_delta=award.get("muscle_delta") if isinstance(award.get("muscle_delta"), dict) else {},
+            status="done",
+        )
         await state.clear()
         await message.answer(texts.REPEAT_DONE, reply_markup=main_menu_kb())
     except Exception:
@@ -225,7 +242,7 @@ async def toggle_workout_status(message: Message, state: FSMContext, db):
             return
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        db.toggle_status(user_id=int(user["id"]), workout_id=int(workout_id))
+        db.toggle_workout_status_with_progress(user_id=int(user["id"]), workout_id=int(workout_id))
         await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
     except Exception:
         log.exception("toggle_workout_status failed")
@@ -378,16 +395,16 @@ async def save_edit_workout(message: Message, state: FSMContext, db):
             return
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        db.update_workout_entry(
+        db.update_workout_entry_with_recalc(
             user_id=int(user["id"]),
             workout_id=int(workout_id),
-            weight=float(data.get("new_weight") or 0),
-            reps=int(data.get("new_reps") or 0),
-            sets_count=int(data.get("new_sets_count") or 0),
-            rest_seconds=int(data.get("new_rest_seconds") or 0),
-            rest_pattern=data.get("new_rest_pattern") if isinstance(data.get("new_rest_pattern"), list) else None,
+            new_weight=float(data.get("new_weight") or 0),
+            new_reps=int(data.get("new_reps") or 0),
+            new_sets_count=int(data.get("new_sets_count") or 0),
+            new_rest_seconds=int(data.get("new_rest_seconds") or 0),
+            new_rest_pattern=data.get("new_rest_pattern") if isinstance(data.get("new_rest_pattern"), list) else None,
         )
-        await message.answer(texts.EDIT_SAVED)
+        await message.answer("Правки сохранены. Прогресс пересчитан.")
         await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
     except Exception:
         log.exception("save_edit_workout failed")
