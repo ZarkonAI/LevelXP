@@ -395,16 +395,16 @@ async def save_edit_workout(message: Message, state: FSMContext, db):
             return
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        db.update_workout_entry(
+        db.update_workout_entry_with_recalc(
             user_id=int(user["id"]),
             workout_id=int(workout_id),
-            weight=float(data.get("new_weight") or 0),
-            reps=int(data.get("new_reps") or 0),
-            sets_count=int(data.get("new_sets_count") or 0),
-            rest_seconds=int(data.get("new_rest_seconds") or 0),
-            rest_pattern=data.get("new_rest_pattern") if isinstance(data.get("new_rest_pattern"), list) else None,
+            new_weight=float(data.get("new_weight") or 0),
+            new_reps=int(data.get("new_reps") or 0),
+            new_sets_count=int(data.get("new_sets_count") or 0),
+            new_rest_seconds=int(data.get("new_rest_seconds") or 0),
+            new_rest_pattern=data.get("new_rest_pattern") if isinstance(data.get("new_rest_pattern"), list) else None,
         )
-        await message.answer(texts.EDIT_SAVED)
+        await message.answer("Правки сохранены. Прогресс пересчитан.")
         await _render_card(message, state, db, user_id=int(user["id"]), workout_id=int(workout_id))
     except Exception:
         log.exception("save_edit_workout failed")
