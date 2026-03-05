@@ -4,12 +4,20 @@ import re
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from app import db as db_module
 from app import texts
-from app.keyboards import back_cancel_kb, main_menu_kb, templates_confirm_kb, templates_list_kb
+from app.keyboards import (
+    back_cancel_kb,
+    main_menu_kb,
+    templates_confirm_inline_kb,
+    templates_confirm_kb,
+    templates_list_inline_kb,
+    templates_list_kb,
+)
 from app.states import QuickLogStates, TemplateBrowseStates
+from app.ui_helpers import send_or_replace_work_message
 
 log = logging.getLogger("handlers.templates")
 router = Router()
@@ -47,6 +55,31 @@ async def _show_template_card(message: Message, state: FSMContext, db, user_id: 
     )
 
 
+async def _show_template_card_compact(source: Message | CallbackQuery, state: FSMContext, db, user_id: int, template_id: int):
+    template = db.get_template(user_id=user_id, template_id=template_id)
+    if not template:
+        await send_or_replace_work_message(source, state, texts.TECH_ERROR)
+        return
+    payload = template.get("payload") if isinstance(template.get("payload"), list) else []
+    await state.update_data(selected_template_id=template_id)
+    await state.set_state(TemplateBrowseStates.confirming)
+    await send_or_replace_work_message(
+        source,
+        state,
+        f"<b>{template.get('name', 'Шаблон')}</b>\n\n{_format_payload(payload, db)}",
+        templates_confirm_inline_kb(template_id),
+    )
+
+
+async def _is_compact_mode(message: Message, db) -> bool:
+    try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        return db.get_user_ui_mode(int(user["id"])) == "compact"
+    except Exception:
+        log.exception("templates _is_compact_mode failed")
+        return False
+
+
 @router.message(F.text == "🔁 Шаблоны")
 async def open_templates(message: Message, state: FSMContext, db):
     try:
@@ -60,10 +93,44 @@ async def open_templates(message: Message, state: FSMContext, db):
         templates_map = {str(idx): int(row["id"]) for idx, row in enumerate(templates, start=1)}
         await state.update_data(templates_list=templates, templates_map=templates_map)
         await state.set_state(TemplateBrowseStates.browsing)
-        await message.answer(texts.TEMPLATES_TITLE, reply_markup=templates_list_kb(templates))
+        if await _is_compact_mode(message, db):
+            await send_or_replace_work_message(message, state, texts.TEMPLATES_TITLE, templates_list_inline_kb(templates))
+        else:
+            await message.answer(texts.TEMPLATES_TITLE, reply_markup=templates_list_kb(templates))
     except Exception:
         log.exception("open_templates failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.callback_query(F.data.startswith("templates:"))
+async def templates_compact_callbacks(callback: CallbackQuery, state: FSMContext, db):
+    try:
+        user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+        if db.get_user_ui_mode(int(user["id"])) != "compact":
+            await callback.answer()
+            return
+
+        parts = (callback.data or "").split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        template_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+        state_data = await state.get_data()
+        templates = state_data.get("templates_list") or db.list_templates(user_id=int(user["id"]))
+
+        if action == "open" and template_id:
+            await _show_template_card_compact(callback, state, db, user_id=int(user["id"]), template_id=template_id)
+        elif action == "back":
+            await state.set_state(TemplateBrowseStates.browsing)
+            await send_or_replace_work_message(callback, state, texts.TEMPLATES_TITLE, templates_list_inline_kb(templates))
+        elif action == "apply" and template_id:
+            await state.update_data(selected_template_id=template_id)
+            await apply_template(callback.message, state, db)
+        elif action == "edit" and template_id:
+            await state.update_data(selected_template_id=template_id)
+            await edit_template_before_apply(callback.message, state, db)
+        await callback.answer()
+    except Exception:
+        log.exception("templates_compact_callbacks failed")
+        await callback.answer()
 
 
 @router.message(TemplateBrowseStates.browsing, F.text.regexp(INDEX_RE.pattern))
