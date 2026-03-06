@@ -105,21 +105,27 @@ def confirm_kb() -> ReplyKeyboardMarkup:
 
 
 
-def exercise_category_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🦵 Ноги"), KeyboardButton(text="🧱 Спина")],
-            [KeyboardButton(text="🫀 Грудь"), KeyboardButton(text="🧍 Плечи")],
-            [KeyboardButton(text="💪 Руки"), KeyboardButton(text="🎯 Кор")],
+def exercise_category_kb(*, translate_mode: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="🦵 Ноги"), KeyboardButton(text="🧱 Спина")],
+        [KeyboardButton(text="🫀 Грудь"), KeyboardButton(text="🧍 Плечи")],
+        [KeyboardButton(text="💪 Руки"), KeyboardButton(text="🎯 Кор")],
+    ]
+    if translate_mode:
+        keyboard.append([KeyboardButton(text="⏭ Следующее непереведённое")])
+    keyboard.extend(
+        [
             [KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")],
             [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
+        ]
     )
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
+def exercises_kb(exercises: list[dict], *, translate_mode: bool = False) -> ReplyKeyboardMarkup:
     names = [f"{idx}) {str(exercise.get('display_name') or '')}" for idx, exercise in enumerate(exercises, start=1) if exercise.get("display_name")]
     keyboard = _build_rows(names, row_width=2)
+    if translate_mode:
+        keyboard.append([KeyboardButton(text="⏭ Следующее непереведённое")])
     keyboard.append([KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")])
     keyboard.append([KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")])
 
@@ -279,6 +285,17 @@ def translate_mode_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="Вкл"), KeyboardButton(text="Выкл")],
             [KeyboardButton(text="↩️ Назад")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def translate_exercise_actions_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Ввести RU"), KeyboardButton(text="🆗 Оставить EN")],
+            [KeyboardButton(text="⏭ Следующее непереведённое")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
         ],
         resize_keyboard=True,
     )
