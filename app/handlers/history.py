@@ -65,6 +65,22 @@ def _status_text(status: str | None) -> str:
     return texts.STATUS_DONE if status == "done" else texts.STATUS_PLANNED
 
 
+def _load_exercise_image_url(db, exercise_id: int | None) -> str:
+    if not exercise_id:
+        return ""
+    try:
+        res = (
+            db.client.table("exercises")
+            .select("image_url")
+            .eq("id", int(exercise_id))
+            .limit(1)
+            .execute()
+        )
+        return str((res.data or [{}])[0].get("image_url") or "").strip()
+    except Exception:
+        return ""
+
+
 def _build_warning_text(db, action_text: str, total_xp: int, muscle_delta: dict) -> str:
     return f"{action_text}\n\n" + db.format_delta(total_xp=total_xp, muscle_delta=muscle_delta)
 
@@ -89,6 +105,10 @@ async def _render_card(message: Message, state: FSMContext, db, user_id: int, wo
     if isinstance(rest_pattern, list) and rest_pattern:
         pattern_minutes = ", ".join(f"{(float(s or 0) / 60):g}" for s in rest_pattern)
         lines.append(f"Отдых по подходам: {pattern_minutes}")
+
+    image_url = _load_exercise_image_url(db, card.get("exercise_id"))
+    if image_url:
+        lines.append(f"{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
 
     await state.update_data(selected_workout_id=workout_id, mode=card.get("mode"))
     await state.set_state(HistoryStates.viewing_card)

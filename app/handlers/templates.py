@@ -17,6 +17,22 @@ INDEX_RE = re.compile(r"^(\d+)\)")
 MUSCLE_LABELS = {"legs": "🦵 Ноги", "core": "🎯 Кор", "back": "🧱 Спина", "chest": "🫀 Грудь", "shoulders": "🧍 Плечи", "arms": "💪 Руки"}
 
 
+def _load_exercise_image_url(db, exercise_id: int | None) -> str:
+    if not exercise_id:
+        return ""
+    try:
+        res = (
+            db.client.table("exercises")
+            .select("image_url")
+            .eq("id", int(exercise_id))
+            .limit(1)
+            .execute()
+        )
+        return str((res.data or [{}])[0].get("image_url") or "").strip()
+    except Exception:
+        return ""
+
+
 def _format_payload(payload: list[dict], db) -> str:
     if not payload:
         return "• пустой шаблон"
@@ -30,6 +46,9 @@ def _format_payload(payload: list[dict], db) -> str:
             except Exception:
                 pass
         lines.append(f"{idx}. {ex_name} — {float(item.get('weight') or 0):g}кг × {int(item.get('reps') or 0)} × {int(item.get('sets_count') or 0)}")
+        image_url = _load_exercise_image_url(db, ex_id)
+        if image_url:
+            lines.append(f"   {texts.TECHNIQUE_LINK_PREFIX} {image_url}")
     return "\n".join(lines)
 
 
