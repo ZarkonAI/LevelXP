@@ -21,6 +21,46 @@ MUSCLE_MAP = {
 MODE_STRENGTH = "🏋️ Силовая (одинаковый отдых)"
 MODE_PATTERN = "🔁 Отдых по подходам"
 MUSCLE_LABELS = {"legs": "🦵 Ноги", "core": "🎯 Кор", "back": "🧱 Спина", "chest": "🫀 Грудь", "shoulders": "🧍 Плечи", "arms": "💪 Руки"}
+
+
+def _format_muscles(primary_muscle: str | None) -> str:
+    return MUSCLE_LABELS.get(str(primary_muscle or "").strip().lower(), "—")
+
+
+def _format_equipment(equipment: object) -> str:
+    if isinstance(equipment, list):
+        values = [str(item).strip() for item in equipment if str(item).strip()]
+        return ", ".join(values) if values else "—"
+    text = str(equipment or "").strip()
+    return text or "—"
+
+
+def _exercise_caption(display_name: str, primary_muscle: str | None, equipment: object) -> str:
+    return (
+        f"{display_name}\n"
+        f"Мышцы: {_format_muscles(primary_muscle)}\n"
+        f"Оборудование: {_format_equipment(equipment)}"
+    )
+
+
+def _load_exercise_media(db, exercise_id: int) -> dict:
+    try:
+        res = (
+            db.client.table("exercises")
+            .select("display_name,image_url,equipment,primary_muscle")
+            .eq("id", int(exercise_id))
+            .limit(1)
+            .execute()
+        )
+        row = (res.data or [{}])[0]
+        return {
+            "display_name": row.get("display_name"),
+            "image_url": row.get("image_url"),
+            "equipment": row.get("equipment"),
+            "primary_muscle": row.get("primary_muscle"),
+        }
+    except Exception:
+        return {}
 def _trim_title(title: str, max_len: int = 80) -> str:
     value = (title or "").strip()
     if len(value) <= max_len:
@@ -216,7 +256,25 @@ async def choose_exercise(message: Message, state: FSMContext):
         if not selected:
             await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
             return
-        await state.update_data(exercise_id=selected["id"], exercise_name=selected.get("display_name") or selected.get("name"))
+        media = _load_exercise_media(db, int(selected["id"]))
+        display_name = str(media.get("display_name") or selected.get("name") or "Упражнение")
+        image_url = str(media.get("image_url") or "").strip()
+        caption = _exercise_caption(
+            display_name=display_name,
+            primary_muscle=media.get("primary_muscle") or selected.get("primary_muscle"),
+            equipment=media.get("equipment"),
+        )
+        await state.update_data(
+            exercise_id=selected["id"],
+            exercise_name=selected["name"],
+            exercise_display_name=display_name,
+            image_url=image_url or None,
+        )
+        if image_url:
+            try:
+                await message.answer_photo(photo=image_url, caption=caption)
+            except Exception:
+                await message.answer(f"{caption}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
         await state.set_state(QuickLogStates.enter_weight)
         await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
     except Exception:
@@ -398,7 +456,7 @@ async def _show_confirm(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.set_state(QuickLogStates.confirm)
     lines = [
-        f"{data['exercise_name']}",
+        f"{data.get('exercise_display_name') or data['exercise_name']}",
         f"Вес: {data['weight']} кг",
         f"Повторы: {data['reps']}",
         f"Подходы: {data['sets_count']}",
@@ -409,6 +467,8 @@ async def _show_confirm(message: Message, state: FSMContext):
         lines.append(f"Отдых по подходам: {pattern_str}")
     else:
         lines.append(f"Отдых: {str(data.get('rest_minutes', 0)).replace('.', ',')} мин")
+    if data.get("image_url"):
+        lines.append(f"{texts.TECHNIQUE_LINK_PREFIX} {data['image_url']}")
     await message.answer(f"{texts.CONFIRM}\n\n" + "\n".join(lines), reply_markup=confirm_kb())
 @router.message(QuickLogStates.confirm, F.text == "✏️ Изменить")
 async def edit_quick_log(message: Message, state: FSMContext):
