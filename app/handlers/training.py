@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from app import db as db_module
 from app import texts
-from app.keyboards import back_cancel_kb, confirm_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb
+from app.keyboards import back_cancel_kb, confirm_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb
 from app.states import QuickLogStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -105,14 +105,24 @@ async def back_from_choose_mode(message: Message, state: FSMContext):
     await _to_menu(message, state)
 @router.message(QuickLogStates.choose_exercise, F.text == "↩️ Назад")
 async def back_from_choose_exercise(message: Message, state: FSMContext):
-    await state.set_state(QuickLogStates.choose_mode)
-    await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+    data = await state.get_data()
+    if data.get("category_step"):
+        await state.set_state(QuickLogStates.choose_mode)
+        await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+        return
+    await state.update_data(category_step=True)
+    await state.set_state(QuickLogStates.choose_exercise)
+    await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb())
 @router.message(QuickLogStates.search_exercise, F.text == "↩️ Назад")
 async def back_from_search(message: Message, state: FSMContext):
-    await _show_choose_exercise(message, state)
+    await state.update_data(category_step=True)
+    await state.set_state(QuickLogStates.choose_exercise)
+    await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb())
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
 async def back_from_custom_name(message: Message, state: FSMContext):
-    await _show_choose_exercise(message, state)
+    await state.update_data(category_step=True)
+    await state.set_state(QuickLogStates.choose_exercise)
+    await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb())
 @router.message(QuickLogStates.custom_primary_muscle, F.text == "↩️ Назад")
 async def back_from_custom_primary(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.custom_name)
@@ -159,11 +169,9 @@ async def choose_mode(message: Message, state: FSMContext, db):
         else:
             await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
             return
-        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        exercises = db.list_exercises(user_id=int(user["id"]), limit=12)
-        await state.update_data(mode=mode, exercises=exercises)
+        await state.update_data(mode=mode, exercises=[], selected_category=None, category_step=True)
         await state.set_state(QuickLogStates.choose_exercise)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+        await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb())
     except Exception:
         log.exception("choose_mode failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -171,16 +179,30 @@ async def choose_mode(message: Message, state: FSMContext, db):
 async def choose_exercise(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
+        if data.get("category_step"):
+            if message.text == "🔎 Поиск":
+                await state.set_state(QuickLogStates.search_exercise)
+                await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+                return
+            if message.text == "➕ Своё упражнение":
+                await state.set_state(QuickLogStates.custom_name)
+                await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
+                return
+            selected_muscle = MUSCLE_MAP.get(message.text or "")
+            if not selected_muscle:
+                await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb())
+                return
+            user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+            exercises = db.list_exercises(user_id=int(user["id"]), limit=12, primary_muscle=selected_muscle)
+            if not exercises:
+                await message.answer(texts.SEARCH_EMPTY, reply_markup=exercise_category_kb())
+                return
+            await state.update_data(exercises=exercises, selected_category=selected_muscle, category_step=False)
+            await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+            return
+
         exercises = data.get("exercises") or []
         by_name = {exercise.get("name"): exercise for exercise in exercises if exercise.get("name")}
-        if message.text == "🔎 Поиск":
-            await state.set_state(QuickLogStates.search_exercise)
-            await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
-            return
-        if message.text == "➕ Своё упражнение":
-            await state.set_state(QuickLogStates.custom_name)
-            await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
-            return
         selected = by_name.get(message.text)
         if not selected:
             await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
@@ -203,7 +225,7 @@ async def search_exercise(message: Message, state: FSMContext, db):
         if not exercises:
             await message.answer(texts.SEARCH_EMPTY, reply_markup=back_cancel_kb())
             return
-        await state.update_data(exercises=exercises)
+        await state.update_data(exercises=exercises, category_step=False)
         await state.set_state(QuickLogStates.choose_exercise)
         await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
     except Exception:

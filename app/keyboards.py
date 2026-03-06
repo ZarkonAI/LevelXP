@@ -103,6 +103,20 @@ def confirm_kb() -> ReplyKeyboardMarkup:
     )
 
 
+
+
+def exercise_category_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🦵 Ноги"), KeyboardButton(text="🧱 Спина")],
+            [KeyboardButton(text="🫀 Грудь"), KeyboardButton(text="🧍 Плечи")],
+            [KeyboardButton(text="💪 Руки"), KeyboardButton(text="🎯 Кор")],
+            [KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+    )
+
 def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
     names = [str(exercise.get("name", "")) for exercise in exercises if exercise.get("name")]
     keyboard = _build_rows(names, row_width=2)
