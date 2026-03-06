@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -34,6 +34,62 @@ MUSCLE_ALIASES = {
     "forearms": "arms",
     "abdominals": "core",
 }
+
+
+class TranslationService:
+    def __init__(self) -> None:
+        from argostranslate import package, translate
+
+        self._package = package
+        self._translate = translate
+        self._cache: Dict[str, str] = {}
+        self.translated_strings = 0
+        self.cache_hits = 0
+
+    def ensure_en_ru_package(self) -> None:
+        self._package.update_package_index()
+        installed_languages = self._translate.get_installed_languages()
+        has_en_ru = False
+        for from_lang in installed_languages:
+            if from_lang.code != "en":
+                continue
+            if any(to_lang.code == "ru" for to_lang in from_lang.translations_to):
+                has_en_ru = True
+                break
+
+        if has_en_ru:
+            return
+
+        available_packages = self._package.get_available_packages()
+        matching_package = next(
+            (pkg for pkg in available_packages if pkg.from_code == "en" and pkg.to_code == "ru"),
+            None,
+        )
+
+        if matching_package is None:
+            raise RuntimeError("Could not find argostranslate package for en->ru")
+
+        downloaded_path = matching_package.download()
+        self._package.install_from_path(downloaded_path)
+
+    def translate_text(self, text: str) -> str:
+        clean_text = text.strip()
+        if not clean_text:
+            return clean_text
+        if clean_text in self._cache:
+            self.cache_hits += 1
+            return self._cache[clean_text]
+
+        translated = self._translate.translate(clean_text, "en", "ru")
+        self._cache[clean_text] = translated
+        self.translated_strings += 1
+        return translated
+
+    def translate_lines(self, lines: List[Any]) -> List[str]:
+        translated_lines: List[str] = []
+        for line in lines:
+            translated_lines.append(self.translate_text(str(line)))
+        return translated_lines
 
 
 def get_supabase_client() -> Client:
@@ -104,15 +160,26 @@ def get_image_url(images: List[Any]) -> Optional[str]:
     return f"{IMAGE_PREFIX}{first_path}"
 
 
-def build_row(exercise: Dict[str, Any]) -> Dict[str, Any]:
+def build_row(
+    exercise: Dict[str, Any],
+    translator: TranslationService,
+    translate_instructions: bool,
+) -> Dict[str, Any]:
     source_ref = str(exercise.get("id") or "").strip()
     if not source_ref:
         raise ValueError("exercise id is missing")
 
     primary_muscles_raw = exercise.get("primaryMuscles") if isinstance(exercise.get("primaryMuscles"), list) else []
     secondary_muscles = exercise.get("secondaryMuscles") if isinstance(exercise.get("secondaryMuscles"), list) else []
-    instructions = exercise.get("instructions") if isinstance(exercise.get("instructions"), list) else []
+    instructions_en = exercise.get("instructions") if isinstance(exercise.get("instructions"), list) else []
     images = exercise.get("images") if isinstance(exercise.get("images"), list) else []
+    name_en = str(exercise.get("name") or "").strip() or f"Exercise {source_ref}"
+    name_ru = translator.translate_text(name_en)
+
+    if translate_instructions:
+        instructions = translator.translate_lines(instructions_en)
+    else:
+        instructions = instructions_en
 
     primary_muscle, muscle_map = build_muscle_fields(exercise)
 
@@ -120,7 +187,8 @@ def build_row(exercise: Dict[str, Any]) -> Dict[str, Any]:
         "source": SOURCE,
         "source_ref": source_ref,
         "owner_user_id": None,
-        "name": str(exercise.get("name") or "").strip() or f"Exercise {source_ref}",
+        "name": name_ru,
+        "name_en": name_en,
         "level": exercise.get("level"),
         "mechanic": exercise.get("mechanic"),
         "force": exercise.get("force"),
@@ -129,6 +197,7 @@ def build_row(exercise: Dict[str, Any]) -> Dict[str, Any]:
         "primary_muscles_raw": primary_muscles_raw,
         "secondary_muscles": secondary_muscles,
         "instructions": instructions,
+        "instructions_en": instructions_en,
         "images": images,
         "image_url": get_image_url(images),
         "primary_muscle": primary_muscle,
@@ -140,16 +209,34 @@ def upsert_batch(client: Client, batch: List[Dict[str, Any]]) -> None:
     client.table("exercises").upsert(batch, on_conflict="source,source_ref").execute()
 
 
-def run(limit: Optional[int], dry_run: bool) -> None:
+def get_existing_refs(client: Client, source_refs: List[str]) -> Set[str]:
+    existing: Set[str] = set()
+    for start in range(0, len(source_refs), BATCH_SIZE):
+        chunk = source_refs[start : start + BATCH_SIZE]
+        response = (
+            client.table("exercises")
+            .select("source_ref")
+            .eq("source", SOURCE)
+            .in_("source_ref", chunk)
+            .execute()
+        )
+        existing.update(str(item["source_ref"]) for item in response.data or [] if item.get("source_ref"))
+    return existing
+
+
+def run(limit: Optional[int], dry_run: bool, translate_instructions: bool) -> None:
     exercises = load_exercises()
     if limit is not None:
         exercises = exercises[:limit]
+
+    translator = TranslationService()
+    translator.ensure_en_ru_package()
 
     rows: List[Dict[str, Any]] = []
     failed = 0
     for idx, exercise in enumerate(exercises, start=1):
         try:
-            rows.append(build_row(exercise))
+            rows.append(build_row(exercise, translator=translator, translate_instructions=translate_instructions))
         except Exception as exc:
             failed += 1
             ex_id = exercise.get("id") if isinstance(exercise, dict) else "unknown"
@@ -162,26 +249,55 @@ def run(limit: Optional[int], dry_run: bool) -> None:
 
     if dry_run:
         print("Dry-run enabled: no DB changes were made.")
+        print(
+            "Translation stats: "
+            f"translated={translator.translated_strings}, cache_hits={translator.cache_hits}"
+        )
         return
 
     client = get_supabase_client()
+    existing_refs = get_existing_refs(client, [row["source_ref"] for row in rows])
+    inserted = 0
+    updated = 0
     total = len(rows)
-    for start in range(0, total, BATCH_SIZE):
-        batch = rows[start : start + BATCH_SIZE]
-        upsert_batch(client, batch)
-        end = min(start + BATCH_SIZE, total)
-        print(f"Upserted: {end}/{total}")
+    for idx, row in enumerate(rows, start=1):
+        try:
+            was_existing = row["source_ref"] in existing_refs
+            upsert_batch(client, [row])
+            if was_existing:
+                updated += 1
+            else:
+                inserted += 1
+                existing_refs.add(row["source_ref"])
+        except Exception as exc:
+            failed += 1
+            print(f"[ERROR] upsert failed for source_ref={row.get('source_ref')}: {exc}")
+        if idx % BATCH_SIZE == 0 or idx == total:
+            print(f"Processed upserts: {idx}/{total}")
 
-    print("Done.")
+    print(
+        "Done. "
+        f"inserted={inserted}, updated={updated}, failed={failed}, "
+        f"translated={translator.translated_strings}, cache_hits={translator.cache_hits}"
+    )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Seed global exercises from yuhonas/free-exercise-db")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of imported exercises")
     parser.add_argument("--dry-run", action="store_true", help="Build and print stats without DB writes")
+    parser.add_argument(
+        "--translate-instructions",
+        action="store_true",
+        help="Translate instruction lines from EN to RU (slower)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    run(limit=args.limit, dry_run=args.dry_run)
+    run(
+        limit=args.limit,
+        dry_run=args.dry_run,
+        translate_instructions=args.translate_instructions,
+    )
