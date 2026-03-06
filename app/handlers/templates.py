@@ -8,7 +8,7 @@ from aiogram.types import Message
 
 from app import db as db_module
 from app import texts
-from app.keyboards import back_cancel_kb, main_menu_kb, templates_confirm_kb, templates_list_kb
+from app.keyboards import back_cancel_kb, continue_back_kb, main_menu_kb, templates_confirm_kb, templates_list_kb
 from app.states import QuickLogStates, TemplateBrowseStates
 
 log = logging.getLogger("handlers.templates")
@@ -31,6 +31,10 @@ def _format_payload(payload: list[dict], db) -> str:
                 pass
         lines.append(f"{idx}. {ex_name} — {float(item.get('weight') or 0):g}кг × {int(item.get('reps') or 0)} × {int(item.get('sets_count') or 0)}")
     return "\n".join(lines)
+
+
+def _format_delta_warning(db, total_xp: int, muscle_delta: dict) -> str:
+    return "<b>Подтверждение</b>\n" + db.format_delta(total_xp=total_xp, muscle_delta=muscle_delta)
 
 
 async def _show_template_card(message: Message, state: FSMContext, db, user_id: int, template_id: int):
@@ -86,6 +90,31 @@ async def select_template(message: Message, state: FSMContext, db):
 
 
 @router.message(TemplateBrowseStates.confirming, F.text == "✅ Применить")
+async def ask_apply_template_confirm(message: Message, state: FSMContext, db):
+    try:
+        data = await state.get_data()
+        selected_template_id = data.get("selected_template_id")
+        if not selected_template_id:
+            await message.answer(texts.TEMPLATES_TITLE, reply_markup=main_menu_kb())
+            return
+
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        template = db.get_template(user_id=int(user["id"]), template_id=int(selected_template_id))
+        if not template:
+            await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+            return
+
+        payload = template.get("payload") if isinstance(template.get("payload"), list) else []
+        total_xp, muscle_delta, _ = db.compute_delta_from_payload(payload)
+        await state.update_data(confirm_template_payload=payload)
+        await state.set_state(TemplateBrowseStates.confirming_apply)
+        await message.answer(_format_delta_warning(db, total_xp, muscle_delta), reply_markup=continue_back_kb())
+    except Exception:
+        log.exception("ask_apply_template_confirm failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(TemplateBrowseStates.confirming_apply, F.text == "✅ Продолжить")
 async def apply_template(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
@@ -103,27 +132,20 @@ async def apply_template(message: Message, state: FSMContext, db):
 
         workout_id = db.create_workout_from_template(user_id=int(user["id"]), template_row=template)
         payload = template.get("payload") if isinstance(template.get("payload"), list) else []
+        total_xp, muscle_delta, total_sets = db.compute_delta_from_payload(payload)
 
-        total_xp = 0
-        total_sets = 0
-        muscle_delta = {}
-        top = []
+        top = sorted(muscle_delta.items(), key=lambda x: x[1], reverse=True)[:3]
         for item in payload:
             ex_id = item.get("exercise_id")
             if ex_id is None:
                 continue
-            award = db.award_and_update_progress(
+            db.award_and_update_progress(
                 user_id=int(user["id"]),
                 exercise_id=int(ex_id),
                 weight=float(item.get("weight") or 0),
                 reps=int(item.get("reps") or 0),
                 sets_count=int(item.get("sets_count") or 0),
             )
-            total_xp += int(award.get("xp_gain") or 0)
-            total_sets += int(award.get("total_sets_for_workout") or 0)
-            for m, val in (award.get("muscle_delta") or {}).items():
-                muscle_delta[m] = int(muscle_delta.get(m, 0)) + int(val)
-            top.extend(award.get("muscle_gains_sorted_top3") or [])
 
         db.update_workout_metrics(int(user["id"]), int(workout_id), total_xp=total_xp, total_sets=total_sets, muscle_delta=muscle_delta, status="done")
         progress = db.get_progress(int(user["id"]))
@@ -132,7 +154,7 @@ async def apply_template(message: Message, state: FSMContext, db):
             f"+<b>{total_xp} XP</b> | Уровень: <b>{progress['level']}</b>\n"
             f"XP: <b>{progress['xp']}/{100 + int(progress['level']) * 25}</b>\n\n"
             "<b>Прокачка</b>\n"
-            + ("\n".join([f"- {MUSCLE_LABELS.get(m, '🏋️ Нагрузка')}: +{g}" for m, g in top[:3]]) if top else "- 🏋️ Общая нагрузка учтена")
+            + ("\n".join([f"- {MUSCLE_LABELS.get(m, '🏋️ Нагрузка')}: +{g}" for m, g in top]) if top else "- 🏋️ Общая нагрузка учтена")
             + "\n\nПрогресс засчитан."
         )
         await state.clear()
@@ -183,7 +205,7 @@ async def edit_template_before_apply(message: Message, state: FSMContext, db):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(StateFilter(TemplateBrowseStates.browsing, TemplateBrowseStates.confirming), F.text == "↩️ Назад")
+@router.message(StateFilter(TemplateBrowseStates.browsing, TemplateBrowseStates.confirming, TemplateBrowseStates.confirming_apply), F.text == "↩️ Назад")
 async def templates_back(message: Message, state: FSMContext):
     try:
         data = await state.get_data()
@@ -199,7 +221,7 @@ async def templates_back(message: Message, state: FSMContext):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(StateFilter(TemplateBrowseStates.browsing, TemplateBrowseStates.confirming), F.text == "↩️ В меню")
+@router.message(StateFilter(TemplateBrowseStates.browsing, TemplateBrowseStates.confirming, TemplateBrowseStates.confirming_apply), F.text == "↩️ В меню")
 async def templates_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(texts.MENU, reply_markup=main_menu_kb())
