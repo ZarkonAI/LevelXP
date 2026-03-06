@@ -152,8 +152,8 @@ async def back_from_choose_category(message: Message, state: FSMContext):
 async def back_from_choose_exercise(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
     await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb())
-@router.message(QuickLogStates.search_exercise, F.text == "↩️ Назад")
-async def back_from_search(message: Message, state: FSMContext):
+@router.message(QuickLogStates.search_query, F.text == "↩️ Назад")
+async def back_from_search_query(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
     await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb())
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
@@ -216,7 +216,7 @@ async def choose_mode(message: Message, state: FSMContext, db):
 async def choose_category(message: Message, state: FSMContext, db):
     try:
         if message.text == "🔎 Поиск":
-            await state.set_state(QuickLogStates.search_exercise)
+            await state.set_state(QuickLogStates.search_query)
             await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
             return
         if message.text == "➕ Своё упражнение":
@@ -248,16 +248,16 @@ async def choose_exercise(message: Message, state: FSMContext):
         data = await state.get_data()
         exercises = data.get("exercises") or []
         by_name = {
-            (exercise.get("display_name") or exercise.get("name")): exercise
+            str(exercise.get("display_name")): exercise
             for exercise in exercises
-            if (exercise.get("display_name") or exercise.get("name"))
+            if exercise.get("display_name")
         }
         selected = by_name.get(message.text)
         if not selected:
             await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
             return
         media = _load_exercise_media(db, int(selected["id"]))
-        display_name = str(media.get("display_name") or selected.get("name") or "Упражнение")
+        display_name = str(media.get("display_name") or selected.get("display_name") or "Упражнение")
         image_url = str(media.get("image_url") or "").strip()
         caption = _exercise_caption(
             display_name=display_name,
@@ -266,7 +266,7 @@ async def choose_exercise(message: Message, state: FSMContext):
         )
         await state.update_data(
             exercise_id=selected["id"],
-            exercise_name=selected["name"],
+            exercise_name=display_name,
             exercise_display_name=display_name,
             image_url=image_url or None,
         )
@@ -280,8 +280,8 @@ async def choose_exercise(message: Message, state: FSMContext):
     except Exception:
         log.exception("choose_exercise failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-@router.message(QuickLogStates.search_exercise)
-async def search_exercise(message: Message, state: FSMContext, db):
+@router.message(QuickLogStates.search_query)
+async def search_query(message: Message, state: FSMContext, db):
     try:
         query = (message.text or "").strip()
         if not query:
@@ -296,7 +296,7 @@ async def search_exercise(message: Message, state: FSMContext, db):
         await state.set_state(QuickLogStates.choose_exercise)
         await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
     except Exception:
-        log.exception("search_exercise failed")
+        log.exception("search_query failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 @router.message(QuickLogStates.custom_name)
 async def custom_name(message: Message, state: FSMContext):
@@ -335,7 +335,7 @@ async def custom_primary_muscle(message: Message, state: FSMContext, db):
             await message.answer(texts.ERR_EXERCISE_NAME, reply_markup=back_cancel_kb())
             await state.set_state(QuickLogStates.custom_name)
             return
-        await state.update_data(exercise_id=exercise["id"], exercise_name=exercise.get("display_name") or exercise.get("name"), primary_muscle=primary_muscle)
+        await state.update_data(exercise_id=exercise["id"], exercise_name=exercise.get("display_name"), primary_muscle=primary_muscle)
         await state.set_state(QuickLogStates.enter_weight)
         await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
     except Exception:

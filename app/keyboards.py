@@ -118,7 +118,7 @@ def exercise_category_kb() -> ReplyKeyboardMarkup:
     )
 
 def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
-    names = [str(exercise.get("display_name") or exercise.get("name") or "") for exercise in exercises if (exercise.get("display_name") or exercise.get("name"))]
+    names = [str(exercise.get("display_name") or "") for exercise in exercises if exercise.get("display_name")]
     keyboard = _build_rows(names, row_width=2)
     keyboard.append([KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")])
     keyboard.append([KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")])
