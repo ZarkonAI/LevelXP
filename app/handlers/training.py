@@ -35,19 +35,11 @@ def _format_equipment(equipment: object) -> str:
     return text or "—"
 
 
-def _exercise_caption(display_name: str, primary_muscle: str | None, equipment: object) -> str:
-    return (
-        f"{display_name}\n"
-        f"Мышцы: {_format_muscles(primary_muscle)}\n"
-        f"Оборудование: {_format_equipment(equipment)}"
-    )
-
-
 def _load_exercise_media(db, exercise_id: int) -> dict:
     try:
         res = (
             db.client.table("exercises")
-            .select("display_name,image_url,equipment,primary_muscle")
+            .select("display_name,image_url,primary_muscle")
             .eq("id", int(exercise_id))
             .limit(1)
             .execute()
@@ -56,7 +48,6 @@ def _load_exercise_media(db, exercise_id: int) -> dict:
         return {
             "display_name": row.get("display_name"),
             "image_url": row.get("image_url"),
-            "equipment": row.get("equipment"),
             "primary_muscle": row.get("primary_muscle"),
         }
     except Exception:
@@ -259,11 +250,6 @@ async def choose_exercise(message: Message, state: FSMContext):
         media = _load_exercise_media(db, int(selected["id"]))
         display_name = str(media.get("display_name") or selected.get("display_name") or "Упражнение")
         image_url = str(media.get("image_url") or "").strip()
-        caption = _exercise_caption(
-            display_name=display_name,
-            primary_muscle=media.get("primary_muscle") or selected.get("primary_muscle"),
-            equipment=media.get("equipment"),
-        )
         await state.update_data(
             exercise_id=selected["id"],
             exercise_name=display_name,
@@ -272,9 +258,9 @@ async def choose_exercise(message: Message, state: FSMContext):
         )
         if image_url:
             try:
-                await message.answer_photo(photo=image_url, caption=caption)
+                await message.answer_photo(photo=image_url, caption=display_name)
             except Exception:
-                await message.answer(f"{caption}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
+                await message.answer(f"{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
         await state.set_state(QuickLogStates.enter_weight)
         await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
     except Exception:
