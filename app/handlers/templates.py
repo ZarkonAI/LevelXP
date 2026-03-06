@@ -26,7 +26,7 @@ def _format_payload(payload: list[dict], db) -> str:
         ex_id = item.get("exercise_id")
         if ex_id is not None:
             try:
-                ex_name = str(db.get_exercise(int(ex_id)).get("name") or ex_name)
+                ex_name = str(db.get_exercise(int(ex_id)).get("display_name") or ex_name)
             except Exception:
                 pass
         lines.append(f"{idx}. {ex_name} — {float(item.get('weight') or 0):g}кг × {int(item.get('reps') or 0)} × {int(item.get('sets_count') or 0)}")
@@ -186,10 +186,17 @@ async def edit_template_before_apply(message: Message, state: FSMContext, db):
         first = payload[0]
         rest_pattern = first.get("rest_pattern") if isinstance(first.get("rest_pattern"), list) else []
         prefill_rest_pattern_minutes = [float(s or 0) / 60 for s in rest_pattern]
+        exercise_name = "Упражнение"
+        if first.get("exercise_id") is not None:
+            try:
+                exercise_name = str(db.get_exercise(int(first.get("exercise_id"))).get("display_name") or exercise_name)
+            except Exception:
+                pass
+
         await state.update_data(
             mode="pattern" if rest_pattern else "strength",
             exercise_id=first.get("exercise_id"),
-            exercise_name="Упражнение",
+            exercise_name=exercise_name,
             template_edit_payload=payload,
             prefill_weight=float(first.get("weight") or 0),
             prefill_reps=int(first.get("reps") or 0),
