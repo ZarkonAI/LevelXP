@@ -99,8 +99,10 @@ class Db:
         self._ex_cache: Dict[str, Any] = {"data": None, "expires_at": None}
 
     @staticmethod
-    def _exercise_display_name(row: Dict[str, Any]) -> str:
-        return str(row.get("name_ru") or row.get("name") or "Упражнение")
+    def _exercise_display_name(row: Dict[str, Any], lang: str = "ru") -> str:
+        if lang == "ru" and row.get("name_ru"):
+            return str(row.get("name_ru"))
+        return str(row.get("name") or row.get("name_ru") or "Упражнение")
 
     def seed_exercises_if_empty(self) -> None:
         """Idempotent seed: если упражнений нет — добавим базовые."""
@@ -120,7 +122,7 @@ class Db:
 
         res = (
             self.client.table("users")
-            .select("id,telegram_id,username,units,timezone")
+            .select("id,telegram_id,username,units,timezone,exercise_lang,translate_mode")
             .eq("telegram_id", telegram_id)
             .limit(1)
             .execute()
@@ -220,6 +222,7 @@ class Db:
         limit: int = 12,
         primary_muscle: Optional[str] = None,
         query: Optional[str] = None,
+        lang: str = "ru",
     ) -> List[Dict[str, Any]]:
         query_builder = self.client.table("exercises").select(
             "id,name,name_ru,image_url,primary_muscle,muscle_map,is_featured,created_at"
@@ -245,11 +248,34 @@ class Db:
                 "image_url": row.get("image_url"),
                 "primary_muscle": row.get("primary_muscle"),
                 "muscle_map": row.get("muscle_map"),
-                "display_name": self._exercise_display_name(row),
+                "display_name": self._exercise_display_name(row, lang=lang),
             }
             for row in rows
         ]
         return normalized[:limit]
+
+    def get_exercise_lang(self, user_id: int) -> str:
+        res = self.client.table("users").select("exercise_lang").eq("id", user_id).limit(1).execute()
+        if not res.data:
+            return "en"
+        value = str(res.data[0].get("exercise_lang") or "en").lower()
+        return "ru" if value == "ru" else "en"
+
+    def set_exercise_lang(self, user_id: int, lang: str) -> None:
+        value = "ru" if str(lang).lower() == "ru" else "en"
+        self.client.table("users").update({"exercise_lang": value}).eq("id", user_id).execute()
+
+    def get_translate_mode(self, user_id: int) -> bool:
+        res = self.client.table("users").select("translate_mode").eq("id", user_id).limit(1).execute()
+        if not res.data:
+            return False
+        return bool(res.data[0].get("translate_mode"))
+
+    def set_translate_mode(self, user_id: int, enabled: bool) -> None:
+        self.client.table("users").update({"translate_mode": bool(enabled)}).eq("id", user_id).execute()
+
+    def update_exercise_name_ru(self, exercise_id: int, name_ru: str) -> None:
+        self.client.table("exercises").update({"name_ru": (name_ru or "").strip()}).eq("id", exercise_id).execute()
 
     def create_custom_exercise(self, user_id: int, name: str, primary_muscle: str) -> Dict[str, Any]:
         reason = self._validate_exercise_name(name)

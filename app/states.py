@@ -8,6 +8,7 @@ class QuickLogStates(StatesGroup):
     search_query = State()
     custom_name = State()
     custom_primary_muscle = State()
+    set_ru_name = State()
     enter_weight = State()
     enter_reps = State()
     enter_sets = State()
@@ -42,6 +43,8 @@ class EditWorkoutStates(StatesGroup):
 class SettingsStates(StatesGroup):
     units_menu = State()
     waiting_timezone = State()
+    exercise_lang_menu = State()
+    translate_mode_menu = State()
 
 
 class TemplateBrowseStates(StatesGroup):

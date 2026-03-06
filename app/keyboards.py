@@ -118,7 +118,7 @@ def exercise_category_kb() -> ReplyKeyboardMarkup:
     )
 
 def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
-    names = [str(exercise.get("display_name") or "") for exercise in exercises if exercise.get("display_name")]
+    names = [f"{idx}) {str(exercise.get('display_name') or '')}" for idx, exercise in enumerate(exercises, start=1) if exercise.get("display_name")]
     keyboard = _build_rows(names, row_width=2)
     keyboard.append([KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")])
     keyboard.append([KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")])
@@ -242,6 +242,8 @@ def settings_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="⚖️ Единицы")],
             [KeyboardButton(text="🕒 Часовой пояс")],
+            [KeyboardButton(text="🌐 Язык упражнений")],
+            [KeyboardButton(text="✍️ Режим перевода (для админа)")],
             [KeyboardButton(text="↩️ В меню")],
         ],
         resize_keyboard=True,
@@ -253,6 +255,27 @@ def units_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="kg"), KeyboardButton(text="lb")],
             [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def exercise_lang_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Русский (если есть)")],
+            [KeyboardButton(text="English")],
+            [KeyboardButton(text="↩️ Назад")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def translate_mode_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Вкл"), KeyboardButton(text="Выкл")],
+            [KeyboardButton(text="↩️ Назад")],
         ],
         resize_keyboard=True,
     )

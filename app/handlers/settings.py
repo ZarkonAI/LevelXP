@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app import texts
-from app.keyboards import main_menu_kb, settings_kb, units_kb
+from app.keyboards import exercise_lang_kb, main_menu_kb, settings_kb, translate_mode_kb, units_kb
 from app.states import SettingsStates
 
 log = logging.getLogger("handlers.settings")
@@ -20,6 +20,71 @@ async def _render_settings(message: Message, db) -> None:
     units = user.get("units") or "kg"
     timezone_value = user.get("timezone") or "UTC+0"
     await message.answer(texts.SETTINGS_TEXT.format(units=units, timezone=timezone_value), reply_markup=settings_kb())
+
+
+@router.message(F.text == "🌐 Язык упражнений")
+async def choose_exercise_lang(message: Message, state: FSMContext):
+    try:
+        await state.set_state(SettingsStates.exercise_lang_menu)
+        await message.answer(texts.SETTINGS_EXERCISE_LANG_PROMPT, reply_markup=exercise_lang_kb())
+    except Exception:
+        log.exception("choose_exercise_lang failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.exercise_lang_menu, F.text == "↩️ Назад")
+async def back_from_exercise_lang(message: Message, state: FSMContext, db):
+    try:
+        await state.clear()
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("back_from_exercise_lang failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.exercise_lang_menu, F.text.in_({"Русский (если есть)", "English"}))
+async def set_exercise_lang(message: Message, state: FSMContext, db):
+    try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        lang = "ru" if message.text == "Русский (если есть)" else "en"
+        db.set_exercise_lang(user_id=int(user["id"]), lang=lang)
+        await state.clear()
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("set_exercise_lang failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "✍️ Режим перевода (для админа)")
+async def choose_translate_mode(message: Message, state: FSMContext):
+    try:
+        await state.set_state(SettingsStates.translate_mode_menu)
+        await message.answer(texts.SETTINGS_TRANSLATE_MODE_PROMPT, reply_markup=translate_mode_kb())
+    except Exception:
+        log.exception("choose_translate_mode failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.translate_mode_menu, F.text == "↩️ Назад")
+async def back_from_translate_mode(message: Message, state: FSMContext, db):
+    try:
+        await state.clear()
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("back_from_translate_mode failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.translate_mode_menu, F.text.in_({"Вкл", "Выкл"}))
+async def set_translate_mode(message: Message, state: FSMContext, db):
+    try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.set_translate_mode(user_id=int(user["id"]), enabled=message.text == "Вкл")
+        await state.clear()
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("set_translate_mode failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
 @router.message(F.text == "⚙️ Настройки")
