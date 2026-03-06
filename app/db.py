@@ -98,6 +98,10 @@ class Db:
         self.client: Client = create_client(url, service_key)
         self._ex_cache: Dict[str, Any] = {"data": None, "expires_at": None}
 
+    @staticmethod
+    def _exercise_display_name(row: Dict[str, Any]) -> str:
+        return str(row.get("name_ru") or row.get("name") or "Упражнение")
+
     def seed_exercises_if_empty(self) -> None:
         """Idempotent seed: если упражнений нет — добавим базовые."""
         try:
@@ -185,14 +189,16 @@ class Db:
     def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
         res = (
             self.client.table("exercises")
-            .select("id,name,primary_muscle,muscle_map")
+            .select("id,name,name_ru,image_url,primary_muscle,muscle_map")
             .eq("id", exercise_id)
             .limit(1)
             .execute()
         )
         if not res.data:
             raise RuntimeError("Exercise not found")
-        return res.data[0]
+        row = res.data[0]
+        row["display_name"] = self._exercise_display_name(row)
+        return row
 
     def _validate_exercise_name(self, name: str) -> Optional[str]:
         clean = (name or "").strip()
@@ -215,7 +221,9 @@ class Db:
         primary_muscle: Optional[str] = None,
         query: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        query_builder = self.client.table("exercises").select("id,name,primary_muscle,muscle_map,owner_user_id,created_at")
+        query_builder = self.client.table("exercises").select(
+            "id,name,name_ru,image_url,primary_muscle,muscle_map,owner_user_id,created_at"
+        )
         query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
 
         muscle_filter = (primary_muscle or "").strip().lower()
@@ -224,7 +232,7 @@ class Db:
 
         search_query = (query or "").strip()
         if search_query:
-            query_builder = query_builder.ilike("name", f"%{search_query}%")
+            query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
 
         res = query_builder.order("created_at", desc=True).limit(max(limit * 4, limit)).execute()
         rows = res.data or []
@@ -238,8 +246,11 @@ class Db:
             {
                 "id": row.get("id"),
                 "name": row.get("name"),
+                "name_ru": row.get("name_ru"),
+                "image_url": row.get("image_url"),
                 "primary_muscle": row.get("primary_muscle"),
                 "muscle_map": row.get("muscle_map"),
+                "display_name": self._exercise_display_name(row),
             }
             for row in rows
         ]
@@ -261,12 +272,13 @@ class Db:
         res = self.client.table("exercises").insert(payload).execute()
         self._ex_cache = {"data": None, "expires_at": None}
         if res.data and res.data[0].get("id") is not None:
-            return {"id": res.data[0]["id"], "name": res.data[0].get("name", clean_name)}
+            row = res.data[0]
+            return {"id": row["id"], "name": row.get("name", clean_name), "display_name": self._exercise_display_name(row)}
 
         fallback = (
             self.client.table("exercises")
-            .select("id,name")
-             .eq("name", clean_name)
+            .select("id,name,name_ru")
+            .eq("name", clean_name)
             .eq("primary_muscle", primary_muscle)
             .eq("owner_user_id", user_id)
             .order("created_at", desc=True)
@@ -275,7 +287,9 @@ class Db:
         )
         if not fallback.data:
             raise RuntimeError("create_custom_exercise failed")
-        return fallback.data[0]
+        row = fallback.data[0]
+        row["display_name"] = self._exercise_display_name(row)
+        return row
 
     def create_workout(
         self,
@@ -398,9 +412,9 @@ class Db:
         exercise_id = int(item.get("exercise_id") or 0)
         exercise_name = "Упражнение"
         if exercise_id:
-            ex_res = self.client.table("exercises").select("id,name").eq("id", exercise_id).limit(1).execute()
+            ex_res = self.client.table("exercises").select("id,name,name_ru").eq("id", exercise_id).limit(1).execute()
             if ex_res.data:
-                exercise_name = str(ex_res.data[0].get("name") or exercise_name)
+                exercise_name = self._exercise_display_name(ex_res.data[0])
 
         set_row: Dict[str, Any] = {}
         if item.get("id"):
@@ -425,6 +439,7 @@ class Db:
             "workout_item_id": int(item.get("id") or 0),
             "exercise_id": exercise_id,
             "exercise_name": exercise_name,
+            "display_name": exercise_name,
             "weight": float(set_row.get("weight") or 0),
             "reps": int(set_row.get("reps") or 0),
             "sets_count": int(set_row.get("sets_count") or 0),
@@ -624,7 +639,7 @@ class Db:
         set_row = set_res.data[0] or {}
 
         exercise = self.get_exercise(int(item.get("exercise_id") or 0))
-        exercise_name = str(exercise.get("name") or "Тренировка")
+        exercise_name = str(exercise.get("display_name") or "Тренировка")
 
         status = str(workout.get("status") or "planned")
         old_total_xp = self._to_int(workout.get("total_xp"), 0)
@@ -779,11 +794,11 @@ class Db:
         if exercise_ids:
             ex_res = (
                 self.client.table("exercises")
-                .select("id,name")
+                .select("id,name,name_ru")
                 .in_("id", exercise_ids)
                 .execute()
             )
-            exercise_names = {int(row["id"]): str(row.get("name") or "Упражнение") for row in (ex_res.data or [])}
+            exercise_names = {int(row["id"]): self._exercise_display_name(row) for row in (ex_res.data or [])}
 
         result_items: List[Dict[str, Any]] = []
         for item in items:
@@ -802,6 +817,7 @@ class Db:
                     {
                         "exercise_id": item.get("exercise_id"),
                         "exercise_name": exercise_name,
+            "display_name": exercise_name,
                         "weight": 0,
                         "reps": 0,
                         "sets_count": 0,
@@ -816,6 +832,7 @@ class Db:
                     {
                         "exercise_id": item.get("exercise_id"),
                         "exercise_name": exercise_name,
+            "display_name": exercise_name,
                         "weight": set_row.get("weight") or 0,
                         "reps": set_row.get("reps") or 0,
                         "sets_count": set_row.get("sets_count") or 0,
