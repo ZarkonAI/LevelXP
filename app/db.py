@@ -222,7 +222,7 @@ class Db:
         query: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         query_builder = self.client.table("exercises").select(
-            "id,name,name_ru,image_url,primary_muscle,muscle_map,owner_user_id,created_at"
+            "id,name,name_ru,image_url,primary_muscle,muscle_map,is_featured,created_at"
         )
         query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
 
@@ -234,13 +234,8 @@ class Db:
         if search_query:
             query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
 
-        res = query_builder.order("created_at", desc=True).limit(max(limit * 4, limit)).execute()
+        res = query_builder.order("is_featured", desc=True).order("created_at", desc=True).limit(limit).execute()
         rows = res.data or []
-        globals_rows = [row for row in rows if row.get("owner_user_id") is None]
-        custom_rows = [row for row in rows if row.get("owner_user_id") is not None]
-        globals_rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
-        custom_rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
-        rows = globals_rows + custom_rows
 
         normalized = [
             {

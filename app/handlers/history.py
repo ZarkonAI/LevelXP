@@ -81,6 +81,10 @@ def _load_exercise_image_url(db, exercise_id: int | None) -> str:
         return ""
 
 
+def _technique_line(image_url: str) -> str:
+    return f"{texts.TECHNIQUE_LINK_PREFIX} {image_url}"
+
+
 def _build_warning_text(db, action_text: str, total_xp: int, muscle_delta: dict) -> str:
     return f"{action_text}\n\n" + db.format_delta(total_xp=total_xp, muscle_delta=muscle_delta)
 
@@ -108,7 +112,7 @@ async def _render_card(message: Message, state: FSMContext, db, user_id: int, wo
 
     image_url = _load_exercise_image_url(db, card.get("exercise_id"))
     if image_url:
-        lines.append(f"{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
+        lines.append(_technique_line(image_url))
 
     await state.update_data(selected_workout_id=workout_id, mode=card.get("mode"))
     await state.set_state(HistoryStates.viewing_card)

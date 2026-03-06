@@ -48,8 +48,12 @@ def _format_payload(payload: list[dict], db) -> str:
         lines.append(f"{idx}. {ex_name} — {float(item.get('weight') or 0):g}кг × {int(item.get('reps') or 0)} × {int(item.get('sets_count') or 0)}")
         image_url = _load_exercise_image_url(db, ex_id)
         if image_url:
-            lines.append(f"   {texts.TECHNIQUE_LINK_PREFIX} {image_url}")
+            lines.append(f"   {_technique_line(image_url)}")
     return "\n".join(lines)
+
+
+def _technique_line(image_url: str) -> str:
+    return f"{texts.TECHNIQUE_LINK_PREFIX} {image_url}"
 
 
 def _format_delta_warning(db, total_xp: int, muscle_delta: dict) -> str:
