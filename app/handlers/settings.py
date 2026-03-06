@@ -19,7 +19,10 @@ async def _render_settings(message: Message, db) -> None:
     user = db.get_or_create_user(message.from_user.id, message.from_user.username)
     units = user.get("units") or "kg"
     timezone_value = user.get("timezone") or "UTC+0"
-    await message.answer(texts.SETTINGS_TEXT.format(units=units, timezone=timezone_value), reply_markup=settings_kb())
+    await message.answer(
+        texts.SETTINGS_TEXT.format(units=units, timezone=timezone_value),
+        reply_markup=settings_kb(is_admin=db.is_admin(user)),
+    )
 
 
 @router.message(F.text == "🌐 Язык упражнений")
@@ -55,9 +58,13 @@ async def set_exercise_lang(message: Message, state: FSMContext, db):
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(F.text == "✍️ Режим перевода (для админа)")
-async def choose_translate_mode(message: Message, state: FSMContext):
+@router.message(F.text == "✍️ Режим перевода")
+async def choose_translate_mode(message: Message, state: FSMContext, db):
     try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        if not db.is_admin(user):
+            await message.answer(texts.UNAVAILABLE, reply_markup=settings_kb(is_admin=False))
+            return
         await state.set_state(SettingsStates.translate_mode_menu)
         await message.answer(texts.SETTINGS_TRANSLATE_MODE_PROMPT, reply_markup=translate_mode_kb())
     except Exception:
@@ -79,6 +86,10 @@ async def back_from_translate_mode(message: Message, state: FSMContext, db):
 async def set_translate_mode(message: Message, state: FSMContext, db):
     try:
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        if not db.is_admin(user):
+            await state.clear()
+            await message.answer(texts.UNAVAILABLE, reply_markup=settings_kb(is_admin=False))
+            return
         db.set_translate_mode(user_id=int(user["id"]), enabled=message.text == "Вкл")
         await state.clear()
         await _render_settings(message, db)

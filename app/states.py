@@ -8,7 +8,6 @@ class QuickLogStates(StatesGroup):
     search_query = State()
     custom_name = State()
     custom_primary_muscle = State()
-    set_ru_name = State()
     enter_weight = State()
     enter_reps = State()
     enter_sets = State()
@@ -51,3 +50,7 @@ class TemplateBrowseStates(StatesGroup):
     browsing = State()
     confirming = State()
     confirming_apply = State()
+
+
+class TranslateStates(StatesGroup):
+    waiting_name_ru = State()

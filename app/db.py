@@ -122,7 +122,7 @@ class Db:
 
         res = (
             self.client.table("users")
-            .select("id,telegram_id,username,units,timezone,exercise_lang,translate_mode")
+            .select("id,telegram_id,username,units,timezone,exercise_lang,translate_mode,role")
             .eq("telegram_id", telegram_id)
             .limit(1)
             .execute()
@@ -130,6 +130,10 @@ class Db:
         if not res.data:
             raise RuntimeError("User upsert/select failed")
         return res.data[0]
+
+    @staticmethod
+    def is_admin(user: Dict[str, Any]) -> bool:
+        return str((user or {}).get("role") or "user").lower() == "admin"
 
     def ensure_progress(self, user_id: int) -> None:
         res = self.client.table("progress").select("user_id").eq("user_id", user_id).limit(1).execute()
