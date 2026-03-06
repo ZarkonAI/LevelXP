@@ -77,3 +77,10 @@ RU_NAME_PROMPT = "Введи русское название для упражн
 
 UNAVAILABLE = "Недоступно"
 TRANSLATE_IMAGE_MISSING = "⚠️ Не удалось показать изображение. Если есть ссылка на технику — проверь image_url в БД."
+
+TRANSLATE_CARD_TEMPLATE = "<b>EN:</b> {name_en}\n<b>Мышцы:</b> {muscles}\n<b>Оборудование:</b> {equipment}"
+TRANSLATE_SKIPPED = "Пропустил."
+TRANSLATE_SAVED = "✅ Сохранил: {name_en} → {name_ru}"
+TRANSLATE_KEEP_EN = "✅ Оставил EN: {name_en}"
+TRANSLATE_ALL_DONE = "Все переведено в этой категории ✅"
+TRANSLATE_CHOOSE_ACTION = "Выбери действие для перевода:"

@@ -135,6 +135,12 @@ class Db:
     def is_admin(user: Dict[str, Any]) -> bool:
         return str((user or {}).get("role") or "user").lower() == "admin"
 
+    def is_admin_by_id(self, user_id: int) -> bool:
+        res = self.client.table("users").select("role").eq("id", user_id).limit(1).execute()
+        if not res.data:
+            return False
+        return str(res.data[0].get("role") or "user").lower() == "admin"
+
     def ensure_progress(self, user_id: int) -> None:
         res = self.client.table("progress").select("user_id").eq("user_id", user_id).limit(1).execute()
         if res.data:
@@ -229,7 +235,7 @@ class Db:
         lang: str = "ru",
     ) -> List[Dict[str, Any]]:
         query_builder = self.client.table("exercises").select(
-            "id,name,name_ru,image_url,primary_muscle,muscle_map,is_featured,created_at"
+            "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at"
         )
         query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
 
@@ -252,6 +258,7 @@ class Db:
                 "image_url": row.get("image_url"),
                 "primary_muscle": row.get("primary_muscle"),
                 "muscle_map": row.get("muscle_map"),
+                "equipment": row.get("equipment"),
                 "display_name": self._exercise_display_name(row, lang=lang),
             }
             for row in rows
@@ -280,6 +287,24 @@ class Db:
 
     def update_exercise_name_ru(self, exercise_id: int, name_ru: str) -> None:
         self.client.table("exercises").update({"name_ru": (name_ru or "").strip()}).eq("id", exercise_id).execute()
+
+    def get_next_untranslated_exercise(self, primary_muscle: str) -> Optional[Dict[str, Any]]:
+        category = str(primary_muscle or "").strip().lower()
+        if not category:
+            return None
+        res = (
+            self.client.table("exercises")
+            .select("id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,created_at")
+            .is_("owner_user_id", "null")
+            .eq("primary_muscle", category)
+            .or_("name_ru.is.null,name_ru.eq.")
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        return res.data[0]
 
     def create_custom_exercise(self, user_id: int, name: str, primary_muscle: str) -> Dict[str, Any]:
         reason = self._validate_exercise_name(name)
