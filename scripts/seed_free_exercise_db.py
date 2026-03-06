@@ -47,30 +47,26 @@ class TranslationService:
         self.cache_hits = 0
 
     def ensure_en_ru_package(self) -> None:
-        self._package.update_package_index()
-        installed_languages = self._translate.get_installed_languages()
-        has_en_ru = False
-        for from_lang in installed_languages:
-            if from_lang.code != "en":
-                continue
-            if any(to_lang.code == "ru" for to_lang in from_lang.translations_to):
-                has_en_ru = True
-                break
+        from_code = "en"
+        to_code = "ru"
 
-        if has_en_ru:
+        ap = self._package  # <-- ВОТ ЭТОГО не хватало
+
+        # 1) обновить индекс пакетов
+        ap.update_package_index()
+
+        # 2) если пакет уже установлен — выходим
+        installed = ap.get_installed_packages()
+        if any(p.from_code == from_code and p.to_code == to_code for p in installed):
             return
 
-        available_packages = self._package.get_available_packages()
-        matching_package = next(
-            (pkg for pkg in available_packages if pkg.from_code == "en" and pkg.to_code == "ru"),
-            None,
-        )
+        # 3) найти доступный пакет en->ru, скачать и установить
+        available = ap.get_available_packages()
+        pkg = next((p for p in available if p.from_code == from_code and p.to_code == to_code), None)
+        if not pkg:
+            raise RuntimeError("Не найден пакет перевода en->ru в индексе Argos Translate")
 
-        if matching_package is None:
-            raise RuntimeError("Could not find argostranslate package for en->ru")
-
-        downloaded_path = matching_package.download()
-        self._package.install_from_path(downloaded_path)
+        ap.install_from_path(pkg.download())
 
     def translate_text(self, text: str) -> str:
         clean_text = text.strip()

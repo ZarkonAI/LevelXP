@@ -94,7 +94,7 @@ async def _render_card(message: Message, state: FSMContext, db, user_id: int, wo
     lines = [
         f"<b>{_parse_date(card.get('workout_date'))}</b> — <b>{_strip_tech_id(card.get('title') or 'Тренировка')}</b>",
         f"Статус: {_status_text(card.get('status'))}",
-        f"Упражнение: {card.get('exercise_name') or 'Упражнение'}",
+        f"Упражнение: {card.get('display_name') or card.get('exercise_name') or 'Упражнение'}",
         f"Вес: {float(card.get('weight') or 0):g} кг",
         f"Повторы: {int(card.get('reps') or 0)}",
         f"Подходы: {int(card.get('sets_count') or 0)}",

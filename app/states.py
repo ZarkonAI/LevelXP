@@ -3,6 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class QuickLogStates(StatesGroup):
     choose_mode = State()
+    choose_category = State()
     choose_exercise = State()
     search_exercise = State()
     custom_name = State()
