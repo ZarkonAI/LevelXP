@@ -7,7 +7,7 @@ from aiogram.types import Message
 from app import db as db_module
 from app import texts
 from app.keyboards import back_cancel_kb, confirm_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb
-from app.states import QuickLogStates
+from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
 MUSCLE_MAP = {
@@ -21,6 +21,37 @@ MUSCLE_MAP = {
 MODE_STRENGTH = "🏋️ Силовая (одинаковый отдых)"
 MODE_PATTERN = "🔁 Отдых по подходам"
 MUSCLE_LABELS = {"legs": "🦵 Ноги", "core": "🎯 Кор", "back": "🧱 Спина", "chest": "🫀 Грудь", "shoulders": "🧍 Плечи", "arms": "💪 Руки"}
+
+async def _send_exercise_media(message: Message, display_name: str, image_url: str, *, required: bool = False):
+    if image_url:
+        try:
+            await message.answer_photo(photo=image_url, caption=texts.TECHNIQUE_CAPTION.format(display_name=display_name))
+            return
+        except Exception:
+            await message.answer(f"{display_name}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
+            return
+    if required:
+        await message.answer(texts.TRANSLATE_IMAGE_MISSING)
+
+
+async def _render_last_category_exercises(message: Message, state: FSMContext):
+    data = await state.get_data()
+    ex_map = data.get("last_ex_map") or data.get("ex_map") or {}
+    exercises = []
+    for key in sorted(ex_map.keys(), key=lambda value: int(value) if str(value).isdigit() else 9999):
+        row = ex_map.get(key) or {}
+        exercises.append(
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "name_ru": row.get("name_ru"),
+                "image_url": row.get("image_url"),
+                "display_name": row.get("display_name"),
+            }
+        )
+    await state.update_data(exercises=exercises, ex_map=ex_map, selected_category=data.get("last_category") or data.get("selected_category"))
+    await state.set_state(QuickLogStates.choose_exercise)
+    await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
 
 
 def _format_muscles(primary_muscle: str | None) -> str:
@@ -97,7 +128,7 @@ async def _show_choose_exercise(message: Message, state: FSMContext):
         }
         for idx, exercise in enumerate(exercises, start=1)
     }
-    await state.update_data(ex_map=ex_map)
+    await state.update_data(ex_map=ex_map, last_ex_map=ex_map, last_category=data.get("selected_category"))
     await state.set_state(QuickLogStates.choose_exercise)
     await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
 
@@ -246,7 +277,6 @@ async def choose_exercise(message: Message, state: FSMContext, db):
         display_name = str(selected.get("display_name") or selected.get("name") or "Упражнение")
         image_url = str(selected.get("image_url") or "").strip()
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
         translate_mode = db.get_translate_mode(user_id=int(user["id"]))
         await state.update_data(
             exercise_id=selected["id"],
@@ -254,38 +284,41 @@ async def choose_exercise(message: Message, state: FSMContext, db):
             exercise_display_name=display_name,
             image_url=image_url or None,
         )
-        if image_url:
-            try:
-                await message.answer_photo(photo=image_url, caption=texts.TECHNIQUE_CAPTION.format(display_name=display_name))
-            except Exception:
-                await message.answer(f"{display_name}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
-
-        if translate_mode and exercise_lang == "ru" and not str(selected.get("name_ru") or "").strip():
+        if translate_mode:
+            await _send_exercise_media(message, display_name, image_url, required=True)
             await state.update_data(pending_exercise_id=selected["id"])
-            await state.set_state(QuickLogStates.set_ru_name)
+            await state.set_state(TranslateStates.waiting_name_ru)
             await message.answer(texts.RU_NAME_PROMPT, reply_markup=back_cancel_kb())
             return
 
+        await _send_exercise_media(message, display_name, image_url)
         await _goto_enter_weight(message, state, data)
     except Exception:
         log.exception("choose_exercise failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(QuickLogStates.set_ru_name, F.text == "↩️ Назад")
-async def back_from_set_ru_name(message: Message, state: FSMContext):
-    await _show_choose_exercise(message, state)
+@router.message(TranslateStates.waiting_name_ru, F.text == "↩️ Назад")
+async def back_from_translate_name(message: Message, state: FSMContext):
+    await _render_last_category_exercises(message, state)
 
 
-@router.message(QuickLogStates.set_ru_name)
+@router.message(TranslateStates.waiting_name_ru)
 async def set_ru_name(message: Message, state: FSMContext, db):
     try:
         value = (message.text or "").strip()
         data = await state.get_data()
         pending_exercise_id = data.get("pending_exercise_id")
-        if pending_exercise_id and value != "-":
+        if pending_exercise_id and value and value != "-":
             db.update_exercise_name_ru(exercise_id=int(pending_exercise_id), name_ru=value)
-        await _goto_enter_weight(message, state, data)
+            last_ex_map = data.get("last_ex_map") or {}
+            for key, row in last_ex_map.items():
+                if int(row.get("id") or 0) == int(pending_exercise_id):
+                    row["name_ru"] = value
+                    row["display_name"] = value
+                    last_ex_map[key] = row
+            await state.update_data(last_ex_map=last_ex_map, ex_map=last_ex_map)
+        await _render_last_category_exercises(message, state)
     except Exception:
         log.exception("set_ru_name failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

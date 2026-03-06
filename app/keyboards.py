@@ -237,15 +237,18 @@ def repeat_options_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def settings_kb() -> ReplyKeyboardMarkup:
+def settings_kb(*, is_admin: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="⚖️ Единицы")],
+        [KeyboardButton(text="🕒 Часовой пояс")],
+        [KeyboardButton(text="🌐 Язык упражнений")],
+    ]
+    if is_admin:
+        keyboard.append([KeyboardButton(text="✍️ Режим перевода")])
+    keyboard.append([KeyboardButton(text="↩️ В меню")])
+
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="⚖️ Единицы")],
-            [KeyboardButton(text="🕒 Часовой пояс")],
-            [KeyboardButton(text="🌐 Язык упражнений")],
-            [KeyboardButton(text="✍️ Режим перевода (для админа)")],
-            [KeyboardButton(text="↩️ В меню")],
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 
