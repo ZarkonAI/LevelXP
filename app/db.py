@@ -208,9 +208,19 @@ class Db:
             return "symbols"
         return None
 
-    def list_exercises(self, user_id: int, limit: int = 12, query: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_exercises(
+        self,
+        user_id: int,
+        limit: int = 12,
+        primary_muscle: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         query_builder = self.client.table("exercises").select("id,name,primary_muscle,muscle_map,owner_user_id,created_at")
         query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
+
+        muscle_filter = (primary_muscle or "").strip().lower()
+        if muscle_filter:
+            query_builder = query_builder.eq("primary_muscle", muscle_filter)
 
         search_query = (query or "").strip()
         if search_query:
