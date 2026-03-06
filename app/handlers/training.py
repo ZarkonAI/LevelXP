@@ -35,23 +35,7 @@ def _format_equipment(equipment: object) -> str:
     return text or "—"
 
 
-def _load_exercise_media(db, exercise_id: int) -> dict:
-    try:
-        res = (
-            db.client.table("exercises")
-            .select("display_name,image_url,primary_muscle")
-            .eq("id", int(exercise_id))
-            .limit(1)
-            .execute()
-        )
-        row = (res.data or [{}])[0]
-        return {
-            "display_name": row.get("display_name"),
-            "image_url": row.get("image_url"),
-            "primary_muscle": row.get("primary_muscle"),
-        }
-    except Exception:
-        return {}
+EXERCISE_PICK_RE = re.compile(r"^(\d+)\)")
 def _trim_title(title: str, max_len: int = 80) -> str:
     value = (title or "").strip()
     if len(value) <= max_len:
@@ -103,8 +87,24 @@ async def _to_menu(message: Message, state: FSMContext):
 async def _show_choose_exercise(message: Message, state: FSMContext):
     data = await state.get_data()
     exercises = data.get("exercises") or []
+    ex_map = {
+        str(idx): {
+            "id": exercise.get("id"),
+            "name": exercise.get("name"),
+            "name_ru": exercise.get("name_ru"),
+            "image_url": exercise.get("image_url"),
+            "display_name": exercise.get("display_name"),
+        }
+        for idx, exercise in enumerate(exercises, start=1)
+    }
+    await state.update_data(ex_map=ex_map)
     await state.set_state(QuickLogStates.choose_exercise)
     await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+
+
+async def _goto_enter_weight(message: Message, state: FSMContext, data: dict):
+    await state.set_state(QuickLogStates.enter_weight)
+    await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
 @router.message(F.text == "🏋️ Тренировка")
 async def training_menu(message: Message, state: FSMContext):
     try:
@@ -221,35 +221,33 @@ async def choose_category(message: Message, state: FSMContext, db):
             return
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, primary_muscle=selected_muscle)
+        exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
+        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, primary_muscle=selected_muscle, lang=exercise_lang)
         if not exercises:
             await message.answer(texts.SEARCH_EMPTY, reply_markup=exercise_category_kb())
             return
 
         await state.update_data(exercises=exercises, selected_category=selected_muscle)
-        await state.set_state(QuickLogStates.choose_exercise)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+        await _show_choose_exercise(message, state)
     except Exception:
         log.exception("choose_category failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 @router.message(QuickLogStates.choose_exercise)
-async def choose_exercise(message: Message, state: FSMContext):
+async def choose_exercise(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
-        exercises = data.get("exercises") or []
-        by_name = {
-            str(exercise.get("display_name")): exercise
-            for exercise in exercises
-            if exercise.get("display_name")
-        }
-        selected = by_name.get(message.text)
+        ex_map = data.get("ex_map") or {}
+        match = EXERCISE_PICK_RE.match((message.text or "").strip())
+        selected = ex_map.get(match.group(1)) if match else None
         if not selected:
-            await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+            await message.answer(texts.CHOOSE_EXERCISE_FROM_LIST, reply_markup=exercises_kb(data.get("exercises") or []))
             return
-        media = _load_exercise_media(db, int(selected["id"]))
-        display_name = str(media.get("display_name") or selected.get("display_name") or "Упражнение")
-        image_url = str(media.get("image_url") or "").strip()
+        display_name = str(selected.get("display_name") or selected.get("name") or "Упражнение")
+        image_url = str(selected.get("image_url") or "").strip()
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
+        translate_mode = db.get_translate_mode(user_id=int(user["id"]))
         await state.update_data(
             exercise_id=selected["id"],
             exercise_name=display_name,
@@ -258,13 +256,38 @@ async def choose_exercise(message: Message, state: FSMContext):
         )
         if image_url:
             try:
-                await message.answer_photo(photo=image_url, caption=display_name)
+                await message.answer_photo(photo=image_url, caption=texts.TECHNIQUE_CAPTION.format(display_name=display_name))
             except Exception:
-                await message.answer(f"{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
-        await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+                await message.answer(f"{display_name}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
+
+        if translate_mode and exercise_lang == "ru" and not str(selected.get("name_ru") or "").strip():
+            await state.update_data(pending_exercise_id=selected["id"])
+            await state.set_state(QuickLogStates.set_ru_name)
+            await message.answer(texts.RU_NAME_PROMPT, reply_markup=back_cancel_kb())
+            return
+
+        await _goto_enter_weight(message, state, data)
     except Exception:
         log.exception("choose_exercise failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(QuickLogStates.set_ru_name, F.text == "↩️ Назад")
+async def back_from_set_ru_name(message: Message, state: FSMContext):
+    await _show_choose_exercise(message, state)
+
+
+@router.message(QuickLogStates.set_ru_name)
+async def set_ru_name(message: Message, state: FSMContext, db):
+    try:
+        value = (message.text or "").strip()
+        data = await state.get_data()
+        pending_exercise_id = data.get("pending_exercise_id")
+        if pending_exercise_id and value != "-":
+            db.update_exercise_name_ru(exercise_id=int(pending_exercise_id), name_ru=value)
+        await _goto_enter_weight(message, state, data)
+    except Exception:
+        log.exception("set_ru_name failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 @router.message(QuickLogStates.search_query)
 async def search_query(message: Message, state: FSMContext, db):
@@ -274,13 +297,13 @@ async def search_query(message: Message, state: FSMContext, db):
             await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
             return
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, query=query)
+        exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
+        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, query=query, lang=exercise_lang)
         if not exercises:
             await message.answer(texts.SEARCH_EMPTY, reply_markup=back_cancel_kb())
             return
         await state.update_data(exercises=exercises)
-        await state.set_state(QuickLogStates.choose_exercise)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_kb(exercises))
+        await _show_choose_exercise(message, state)
     except Exception:
         log.exception("search_query failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
