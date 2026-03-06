@@ -353,7 +353,7 @@ class Db:
     def list_workouts(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         res = (
             self.client.table("workouts")
-            .select("id,workout_date,title,mode,status")
+            .select("id,workout_date,title,mode,status,total_xp,muscle_delta")
             .eq("user_id", user_id)
             .order("workout_date", desc=True)
             .order("id", desc=True)
@@ -410,6 +410,8 @@ class Db:
             "title": header.get("title"),
             "mode": header.get("mode"),
             "status": header.get("status"),
+            "total_xp": int(header.get("total_xp") or 0),
+            "muscle_delta": header.get("muscle_delta") if isinstance(header.get("muscle_delta"), dict) else {},
             "workout_item_id": int(item.get("id") or 0),
             "exercise_id": exercise_id,
             "exercise_name": exercise_name,
@@ -641,25 +643,12 @@ class Db:
         weight_val = self._to_float(new_weight, 0.0)
         reps_val = self._to_int(new_reps, 0)
         sets_val = self._to_int(new_sets_count, 0)
-        volume = max(0.0, weight_val * reps_val * sets_val)
-        load_points = math.sqrt(volume)
-        new_total_xp = max(5, round(load_points * 0.8))
-
-        muscle_map = exercise.get("muscle_map")
-        primary_muscle = exercise.get("primary_muscle")
-        if not isinstance(muscle_map, dict) or not muscle_map:
-            muscle_map = {primary_muscle: 1.0} if primary_muscle else {}
-
-        new_muscle_delta: Dict[str, int] = {}
-        for muscle, coeff in muscle_map.items():
-            if muscle is None:
-                continue
-            gain = round(load_points * float(coeff))
-            if gain <= 0:
-                continue
-            new_muscle_delta[str(muscle)] = int(gain)
-
-        new_total_sets = sets_val
+        new_total_xp, new_muscle_delta, new_total_sets = self.compute_delta(
+            exercise_id=int(item.get("exercise_id") or 0),
+            weight=weight_val,
+            reps=reps_val,
+            sets_count=sets_val,
+        )
 
         self.client.table("sets").update(
             {
@@ -900,6 +889,96 @@ class Db:
             return None
         return res.data[0]
 
+    @staticmethod
+    def format_delta(total_xp: int, muscle_delta: Dict[str, int]) -> str:
+        xp = int(total_xp or 0)
+        lines = [f"XP: {xp:+d}"]
+        if isinstance(muscle_delta, dict) and muscle_delta:
+            top = sorted(
+                ((str(m), int(v or 0)) for m, v in muscle_delta.items() if int(v or 0) != 0),
+                key=lambda x: abs(x[1]),
+                reverse=True,
+            )[:3]
+            if top:
+                lines.append("Изменения по мышцам:")
+                lines.extend([f"- {m}: {v:+d}" for m, v in top])
+        return "\n".join(lines)
+
+    def get_workout_payload_item(self, user_id: int, workout_id: int) -> Dict[str, Any]:
+        card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
+        if not card:
+            raise RuntimeError("Workout not found")
+        return {
+            "exercise_id": int(card.get("exercise_id") or 0),
+            "weight": float(card.get("weight") or 0),
+            "reps": int(card.get("reps") or 0),
+            "sets_count": int(card.get("sets_count") or 0),
+            "rest_seconds": int(card.get("rest_seconds") or 0),
+            "rest_pattern": card.get("rest_pattern") if isinstance(card.get("rest_pattern"), list) else None,
+        }
+
+    def append_to_template(self, user_id: int, template_id: int, item: Dict[str, Any]) -> bool:
+        template = self.get_template(user_id=user_id, template_id=template_id)
+        if not template:
+            return False
+        payload = template.get("payload") if isinstance(template.get("payload"), list) else []
+        payload.append(
+            {
+                "exercise_id": int(item.get("exercise_id") or 0),
+                "weight": float(item.get("weight") or 0),
+                "reps": int(item.get("reps") or 0),
+                "sets_count": int(item.get("sets_count") or 0),
+                "rest_seconds": int(item.get("rest_seconds") or 0),
+                "rest_pattern": item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else None,
+            }
+        )
+        self.client.table("templates").update({"payload": payload}).eq("id", template_id).eq("user_id", user_id).execute()
+        return True
+
+    def compute_delta(self, exercise_id: int, weight: float, reps: int, sets_count: int) -> tuple[int, Dict[str, int], int]:
+        exercise = self.get_exercise(exercise_id)
+        weight_val = self._to_float(weight, 0.0)
+        reps_val = self._to_int(reps, 0)
+        sets_val = self._to_int(sets_count, 0)
+        volume = weight_val * reps_val * sets_val
+        load_points = math.sqrt(max(0.0, volume))
+        total_xp = max(5, round(load_points * 0.8))
+
+        muscle_map = exercise.get("muscle_map") or {}
+        primary_muscle = exercise.get("primary_muscle")
+        if not isinstance(muscle_map, dict) or not muscle_map:
+            muscle_map = {primary_muscle: 1.0} if primary_muscle else {}
+
+        muscle_delta: Dict[str, int] = {}
+        for muscle, coeff in muscle_map.items():
+            if muscle is None:
+                continue
+            gain = round(load_points * float(coeff))
+            if gain <= 0:
+                continue
+            muscle_delta[str(muscle)] = int(muscle_delta.get(str(muscle), 0)) + int(gain)
+        return int(total_xp), muscle_delta, int(sets_val)
+
+    def compute_delta_from_payload(self, payload_items: List[Dict[str, Any]]) -> tuple[int, Dict[str, int], int]:
+        total_xp = 0
+        total_sets = 0
+        muscle_delta: Dict[str, int] = {}
+        for item in payload_items:
+            ex_id = item.get("exercise_id")
+            if ex_id is None:
+                continue
+            xp_item, muscle_item, sets_item = self.compute_delta(
+                exercise_id=int(ex_id),
+                weight=float(item.get("weight") or 0),
+                reps=int(item.get("reps") or 0),
+                sets_count=int(item.get("sets_count") or 0),
+            )
+            total_xp += int(xp_item)
+            total_sets += int(sets_item)
+            for muscle, gain in muscle_item.items():
+                muscle_delta[muscle] = int(muscle_delta.get(muscle, 0)) + int(gain)
+        return int(total_xp), muscle_delta, int(total_sets)
+
     def create_workout_from_template(self, user_id: int, template_row: Dict[str, Any], title: Optional[str] = None) -> int:
         workout_title = title or str(template_row.get("name") or "Template")
         workout_date = datetime.now(timezone.utc).date().isoformat()
@@ -1047,35 +1126,19 @@ class Db:
             raise RuntimeError("Progress not found for awarding")
         progress = progress_res.data[0]
 
-        exercise = self.get_exercise(exercise_id)
-
-        weight_val = self._to_float(weight, 0.0)
-        reps_val = self._to_int(reps, 0)
-        sets_val = self._to_int(sets_count, 0)
-        volume = weight_val * reps_val * sets_val
-        load_points = math.sqrt(max(0.0, volume))
-        xp_gain = max(5, round(load_points * 0.8))
-
-        muscle_map = exercise.get("muscle_map") or {}
-        primary_muscle = exercise.get("primary_muscle")
-        if not isinstance(muscle_map, dict) or not muscle_map:
-            muscle_map = {primary_muscle: 1.0} if primary_muscle else {}
+        xp_gain, muscle_delta, sets_val = self.compute_delta(
+            exercise_id=exercise_id,
+            weight=weight,
+            reps=reps,
+            sets_count=sets_count,
+        )
 
         muscles = progress.get("muscles") or {}
         if not isinstance(muscles, dict):
             muscles = {}
 
-        muscle_gains: List[tuple[str, int]] = []
-        muscle_delta: Dict[str, int] = {}
-        for muscle, coeff in muscle_map.items():
-            if muscle is None:
-                continue
-            gain = round(load_points * float(coeff))
-            if gain <= 0:
-                continue
-            muscles[muscle] = int(muscles.get(muscle, 0)) + gain
-            muscle_gains.append((str(muscle), gain))
-            muscle_delta[str(muscle)] = int(muscle_delta.get(str(muscle), 0)) + int(gain)
+        for muscle, gain in muscle_delta.items():
+            muscles[muscle] = int(muscles.get(muscle, 0)) + int(gain)
 
         def xp_to_next(level: int) -> int:
             return 100 + level * 25
@@ -1100,7 +1163,7 @@ class Db:
             }
         ).eq("user_id", user_id).execute()
 
-        muscle_gains_sorted_top3 = sorted(muscle_gains, key=lambda x: x[1], reverse=True)[:3]
+        muscle_gains_sorted_top3 = sorted(muscle_delta.items(), key=lambda x: x[1], reverse=True)[:3]
         return {
             "xp_gain": int(xp_gain),
             "level_new": int(level_new),

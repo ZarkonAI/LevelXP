@@ -129,7 +129,7 @@ def history_action_kb(status: str | None) -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🔁 Повторить")],
             [KeyboardButton(text="✏️ Исправить")],
             [KeyboardButton(text=status_button)],
-            [KeyboardButton(text="💾 Сохранить как шаблон")],
+            [KeyboardButton(text="💾 В шаблон")],
             [KeyboardButton(text="↩️ Назад")],
             [KeyboardButton(text="↩️ В меню")],
         ],
@@ -180,6 +180,35 @@ def back_menu_kb() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def continue_back_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Продолжить")],
+            [KeyboardButton(text="↩️ Назад")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def history_template_options_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ В существующий")],
+            [KeyboardButton(text="🆕 Новый")],
+            [KeyboardButton(text="↩️ Назад")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def indexed_list_kb(items: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=f"{idx}) {label}")] for idx, label in enumerate(items, start=1)]
+    rows.append([KeyboardButton(text="↩️ Назад")])
+    rows.append([KeyboardButton(text="↩️ В меню")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def repeat_options_kb() -> ReplyKeyboardMarkup:

@@ -17,12 +17,16 @@ class QuickLogStates(StatesGroup):
 
 class TemplateStates(StatesGroup):
     waiting_name = State()
+    choosing_save_mode = State()
+    choosing_existing = State()
 
 
 class HistoryStates(StatesGroup):
     browsing_list = State()
     viewing_card = State()
     choosing_repeat_mode = State()
+    confirming_toggle = State()
+    confirming_repeat = State()
 
 
 class EditWorkoutStates(StatesGroup):
@@ -42,3 +46,4 @@ class SettingsStates(StatesGroup):
 class TemplateBrowseStates(StatesGroup):
     browsing = State()
     confirming = State()
+    confirming_apply = State()
