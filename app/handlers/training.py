@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from app import db as db_module
 from app import texts
-from app.keyboards import back_cancel_kb, confirm_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb, translate_exercise_actions_kb
+from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb, translate_exercise_actions_kb
 from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -33,6 +33,24 @@ async def _send_exercise_media(message: Message, display_name: str, image_url: s
     if required:
         await message.answer(texts.TRANSLATE_IMAGE_MISSING)
 
+
+async def _show_selected_exercise_card(message: Message, state: FSMContext, db, *, show_status: bool = False):
+    data = await state.get_data()
+    exercise_id = data.get("exercise_id")
+    if not exercise_id:
+        await _show_choose_exercise(message, state)
+        return
+
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    is_favorite = db.is_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
+    display_name = str(data.get("exercise_display_name") or data.get("exercise_name") or "Упражнение")
+    image_url = str(data.get("image_url") or "").strip()
+    await _send_exercise_media(message, display_name, image_url)
+    if show_status:
+        status_text = texts.FAVORITE_REMOVED if not is_favorite else texts.FAVORITE_ADDED
+        await message.answer(status_text)
+    await state.set_state(QuickLogStates.choose_exercise)
+    await message.answer(texts.EXERCISE_CARD_HINT, reply_markup=exercise_card_kb(is_favorite=is_favorite))
 
 async def _render_last_category_exercises(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -381,6 +399,49 @@ async def keep_en_name(message: Message, state: FSMContext, db):
     await _show_next_untranslated(message, state, db)
 
 
+
+
+@router.message(QuickLogStates.choose_exercise, F.text == "⭐ В избранное")
+async def add_to_favorite(message: Message, state: FSMContext, db):
+    data = await state.get_data()
+    if data.get("translate_mode"):
+        await message.answer(texts.CHOOSE_EXERCISE_FROM_LIST, reply_markup=exercises_kb(data.get("exercises") or [], translate_mode=True))
+        return
+    exercise_id = data.get("exercise_id")
+    if not exercise_id:
+        await _show_choose_exercise(message, state)
+        return
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    db.add_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
+    await _show_selected_exercise_card(message, state, db, show_status=True)
+
+
+@router.message(QuickLogStates.choose_exercise, F.text == "⭐ Убрать из избранного")
+async def remove_from_favorite(message: Message, state: FSMContext, db):
+    data = await state.get_data()
+    if data.get("translate_mode"):
+        await message.answer(texts.CHOOSE_EXERCISE_FROM_LIST, reply_markup=exercises_kb(data.get("exercises") or [], translate_mode=True))
+        return
+    exercise_id = data.get("exercise_id")
+    if not exercise_id:
+        await _show_choose_exercise(message, state)
+        return
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    db.remove_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
+    await _show_selected_exercise_card(message, state, db, show_status=True)
+
+
+@router.message(QuickLogStates.choose_exercise, F.text == "✅ Продолжить")
+async def continue_after_exercise_card(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("translate_mode"):
+        await message.answer(texts.CHOOSE_EXERCISE_FROM_LIST, reply_markup=exercises_kb(data.get("exercises") or [], translate_mode=True))
+        return
+    if not data.get("exercise_id"):
+        await _show_choose_exercise(message, state)
+        return
+    await _goto_enter_weight(message, state, data)
+
 @router.message(QuickLogStates.choose_exercise)
 async def choose_exercise(message: Message, state: FSMContext, db):
     try:
@@ -409,8 +470,7 @@ async def choose_exercise(message: Message, state: FSMContext, db):
             await _start_translate_for_exercise(message, state, selected, waiting_input=False)
             return
 
-        await _send_exercise_media(message, display_name, image_url)
-        await _goto_enter_weight(message, state, data)
+        await _show_selected_exercise_card(message, state, db)
     except Exception:
         log.exception("choose_exercise failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

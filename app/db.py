@@ -4,7 +4,7 @@ import logging
 import math
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from supabase import Client, create_client
 
@@ -234,8 +234,10 @@ class Db:
         query: Optional[str] = None,
         lang: str = "ru",
     ) -> List[Dict[str, Any]]:
+        fetch_limit = max(int(limit or 12) * 4, int(limit or 12))
+        favorite_ids = self.list_favorite_ids(user_id=int(user_id))
         query_builder = self.client.table("exercises").select(
-            "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at"
+            "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,uses_count,is_featured,created_at"
         )
         query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
 
@@ -247,8 +249,18 @@ class Db:
         if search_query:
             query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
 
-        res = query_builder.order("is_featured", desc=True).order("created_at", desc=True).limit(limit).execute()
+        res = query_builder.limit(fetch_limit).execute()
         rows = res.data or []
+
+        def _sort_key(row: Dict[str, Any]) -> tuple:
+            exercise_id = int(row.get("id") or 0)
+            is_favorite = exercise_id in favorite_ids
+            is_featured = bool(row.get("is_featured"))
+            uses_count = int(row.get("uses_count") or 0)
+            display_name = self._exercise_display_name(row, lang=lang).lower()
+            return (0 if is_favorite else 1, 0 if is_featured else 1, -uses_count, display_name)
+
+        rows = sorted(rows, key=_sort_key)
 
         normalized = [
             {
@@ -259,11 +271,42 @@ class Db:
                 "primary_muscle": row.get("primary_muscle"),
                 "muscle_map": row.get("muscle_map"),
                 "equipment": row.get("equipment"),
+                "uses_count": int(row.get("uses_count") or 0),
+                "is_featured": bool(row.get("is_featured")),
+                "is_favorite": int(row.get("id") or 0) in favorite_ids,
                 "display_name": self._exercise_display_name(row, lang=lang),
             }
             for row in rows
         ]
         return normalized[:limit]
+
+    def is_favorite(self, user_id: int, exercise_id: int) -> bool:
+        res = (
+            self.client.table("user_favorite_exercises")
+            .select("user_id")
+            .eq("user_id", int(user_id))
+            .eq("exercise_id", int(exercise_id))
+            .limit(1)
+            .execute()
+        )
+        return bool(res.data)
+
+    def add_favorite(self, user_id: int, exercise_id: int) -> None:
+        payload = {"user_id": int(user_id), "exercise_id": int(exercise_id)}
+        self.client.table("user_favorite_exercises").upsert(payload, on_conflict="user_id,exercise_id").execute()
+
+    def remove_favorite(self, user_id: int, exercise_id: int) -> None:
+        (
+            self.client.table("user_favorite_exercises")
+            .delete()
+            .eq("user_id", int(user_id))
+            .eq("exercise_id", int(exercise_id))
+            .execute()
+        )
+
+    def list_favorite_ids(self, user_id: int) -> Set[int]:
+        res = self.client.table("user_favorite_exercises").select("exercise_id").eq("user_id", int(user_id)).execute()
+        return {int(row.get("exercise_id")) for row in (res.data or []) if row.get("exercise_id") is not None}
 
     def get_exercise_lang(self, user_id: int) -> str:
         res = self.client.table("users").select("exercise_lang").eq("id", user_id).limit(1).execute()

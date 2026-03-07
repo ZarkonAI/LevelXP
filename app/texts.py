@@ -84,3 +84,7 @@ TRANSLATE_SAVED = "✅ Сохранил: {name_en} → {name_ru}"
 TRANSLATE_KEEP_EN = "✅ Оставил EN: {name_en}"
 TRANSLATE_ALL_DONE = "Все переведено в этой категории ✅"
 TRANSLATE_CHOOSE_ACTION = "Выбери действие для перевода:"
+
+EXERCISE_CARD_HINT = "Выбери действие: добавь в избранное или продолжи запись."
+FAVORITE_ADDED = "⭐ Добавил в избранное"
+FAVORITE_REMOVED = "⭐ Убрал из избранного"

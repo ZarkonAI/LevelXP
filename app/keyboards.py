@@ -132,6 +132,18 @@ def exercises_kb(exercises: list[dict], *, translate_mode: bool = False) -> Repl
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
+
+
+def exercise_card_kb(*, is_favorite: bool) -> ReplyKeyboardMarkup:
+    favorite_text = "⭐ Убрать из избранного" if is_favorite else "⭐ В избранное"
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=favorite_text)],
+            [KeyboardButton(text="✅ Продолжить")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+    )
 def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for idx, workout in enumerate(workouts[:10], start=1):
