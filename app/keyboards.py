@@ -134,14 +134,20 @@ def exercises_kb(exercises: list[dict], *, translate_mode: bool = False) -> Repl
 
 
 
-def exercise_card_kb(*, is_favorite: bool) -> ReplyKeyboardMarkup:
+def exercise_card_kb(*, is_favorite: bool, is_admin: bool = False, is_featured: bool = False) -> ReplyKeyboardMarkup:
     favorite_text = "⭐ Убрать из избранного" if is_favorite else "⭐ В избранное"
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=favorite_text)],
+    keyboard = [[KeyboardButton(text=favorite_text)]]
+    if is_admin:
+        featured_text = "🔥 Featured: Выкл" if is_featured else "🔥 Featured: Вкл"
+        keyboard.append([KeyboardButton(text=featured_text)])
+    keyboard.extend(
+        [
             [KeyboardButton(text="✅ Продолжить")],
             [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")],
-        ],
+        ]
+    )
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:

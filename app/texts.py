@@ -88,3 +88,5 @@ TRANSLATE_CHOOSE_ACTION = "Выбери действие для перевода
 EXERCISE_CARD_HINT = "Выбери действие: добавь в избранное или продолжи запись."
 FAVORITE_ADDED = "⭐ Добавил в избранное"
 FAVORITE_REMOVED = "⭐ Убрал из избранного"
+FEATURED_ENABLED = "🔥 Featured включён"
+FEATURED_DISABLED = "🔥 Featured выключен"
