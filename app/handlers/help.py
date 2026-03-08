@@ -1,6 +1,4 @@
 import logging
-from typing import Any
-
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -22,41 +20,15 @@ def _format_ticket(kind: str, message: Message, text: str) -> str:
     return (
         f"🆕 Заявка: {kind}\n"
         f"От: {_normalize_username(message)} (tg_id={message.from_user.id})\n"
-        f"Текст: {text.strip()}\n"
+        f"Текст:\n{text.strip()}"
     )
-
-
-def _is_missing_support_table_error(exc: Exception) -> bool:
-    raw = str(exc).lower()
-    return "support_tickets" in raw and (
-        "does not exist" in raw
-        or "relation" in raw
-        or "undefined table" in raw
-        or "not found" in raw
-    )
-
-
-async def _save_ticket_if_table_exists(db: Any, message: Message, kind: str, text: str) -> None:
-    payload = {
-        "kind": kind,
-        "telegram_id": int(message.from_user.id),
-        "username": message.from_user.username,
-        "text": text.strip(),
-    }
-    try:
-        db.client.table("support_tickets").insert(payload).execute()
-    except Exception as exc:
-        if _is_missing_support_table_error(exc):
-            log.info("support_tickets table does not exist, skip save")
-            return
-        log.exception("failed to store support ticket")
 
 
 @router.message(F.text == "❓ Помощь")
-async def help_cmd(message: Message, state: FSMContext):
+async def help_cmd(message: Message, state: FSMContext, support_username: str):
     try:
         await state.clear()
-        await message.answer(texts.HELP_TEXT, reply_markup=help_inline_kb())
+        await message.answer(texts.HELP_TEXT, reply_markup=help_inline_kb(support_username))
     except Exception:
         log.exception("help_cmd failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -65,7 +37,7 @@ async def help_cmd(message: Message, state: FSMContext):
 @router.callback_query(F.data == "support:write")
 async def support_write_callback(callback: CallbackQuery, state: FSMContext):
     try:
-        await state.set_state(SupportStates.waiting_support_text)
+        await state.set_state(SupportStates.waiting_text)
         await state.update_data(kind="support")
         if callback.message:
             await callback.message.answer(texts.SUPPORT_WRITE_PROMPT)
@@ -78,8 +50,8 @@ async def support_write_callback(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "support:exercise")
 async def support_exercise_callback(callback: CallbackQuery, state: FSMContext):
     try:
-        await state.set_state(SupportStates.waiting_support_text)
-        await state.update_data(kind="exercise_request")
+        await state.set_state(SupportStates.waiting_text)
+        await state.update_data(kind="exercise")
         if callback.message:
             await callback.message.answer(texts.SUPPORT_EXERCISE_PROMPT)
         await callback.answer()
@@ -101,8 +73,8 @@ async def help_back_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer(texts.TECH_ERROR, show_alert=True)
 
 
-@router.message(SupportStates.waiting_support_text, F.text)
-async def support_text_received(message: Message, state: FSMContext, bot, db, admin_ids: tuple[int, ...]):
+@router.message(SupportStates.waiting_text, F.text)
+async def support_text_received(message: Message, state: FSMContext, bot, admin_ids: tuple[int, ...]):
     try:
         text = (message.text or "").strip()
         if not text:
@@ -111,8 +83,6 @@ async def support_text_received(message: Message, state: FSMContext, bot, db, ad
 
         data = await state.get_data()
         kind = str(data.get("kind") or "support")
-
-        await _save_ticket_if_table_exists(db, message, kind, text)
 
         ticket_text = _format_ticket(kind, message, text)
         for admin_id in admin_ids:
@@ -128,6 +98,6 @@ async def support_text_received(message: Message, state: FSMContext, bot, db, ad
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
-@router.message(SupportStates.waiting_support_text)
+@router.message(SupportStates.waiting_text)
 async def support_waiting_non_text(message: Message):
     await message.answer(texts.SUPPORT_TEXT_ONLY)

@@ -58,4 +58,4 @@ class TranslateStates(StatesGroup):
 
 
 class SupportStates(StatesGroup):
-    waiting_support_text = State()
+    waiting_text = State()
