@@ -85,6 +85,13 @@ TRANSLATE_KEEP_EN = "✅ Оставил EN: {name_en}"
 TRANSLATE_ALL_DONE = "Все переведено в этой категории ✅"
 TRANSLATE_CHOOSE_ACTION = "Выбери действие для перевода:"
 
+EXERCISE_PREVIEW_TEMPLATE = (
+    "<b>{display_name}</b>\n"
+    "<b>Мышцы:</b> {muscles}\n"
+    "<b>Оборудование:</b> {equipment}\n"
+    "<b>Техника:</b>\n{technique}"
+)
+
 EXERCISE_CARD_HINT = "Выбери действие: добавь в избранное или продолжи запись."
 FAVORITE_ADDED = "⭐ Добавил в избранное"
 FAVORITE_REMOVED = "⭐ Убрал из избранного"

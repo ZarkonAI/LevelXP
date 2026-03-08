@@ -201,7 +201,7 @@ class Db:
     def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
         res = (
             self.client.table("exercises")
-            .select("id,name,name_ru,image_url,primary_muscle,muscle_map")
+            .select("id,name,name_ru,image_url,instructions,equipment,primary_muscle,muscle_map")
             .eq("id", exercise_id)
             .limit(1)
             .execute()
@@ -230,15 +230,18 @@ class Db:
         self,
         user_id: int,
         limit: int = 12,
+        offset: int = 0,
         primary_muscle: Optional[str] = None,
         query: Optional[str] = None,
         lang: str = "ru",
     ) -> List[Dict[str, Any]]:
-        fetch_limit = max(int(limit or 12) * 4, int(limit or 12))
+        safe_limit = max(int(limit or 12), 1)
+        safe_offset = max(int(offset or 0), 0)
         favorite_ids = self.list_favorite_ids(user_id=int(user_id))
         query_builder = self.client.table("exercises").select(
             "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,uses_count,is_featured,created_at"
         )
+        query_builder = query_builder.eq("is_active", True)
         query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
 
         muscle_filter = (primary_muscle or "").strip().lower()
@@ -248,19 +251,12 @@ class Db:
         search_query = (query or "").strip()
         if search_query:
             query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
+        query_builder = query_builder.order("is_featured", desc=True)
+        query_builder = query_builder.order("uses_count", desc=True)
+        query_builder = query_builder.order("name", desc=False)
 
-        res = query_builder.limit(fetch_limit).execute()
+        res = query_builder.range(safe_offset, safe_offset + safe_limit - 1).execute()
         rows = res.data or []
-
-        def _sort_key(row: Dict[str, Any]) -> tuple:
-            exercise_id = int(row.get("id") or 0)
-            is_favorite = exercise_id in favorite_ids
-            is_featured = bool(row.get("is_featured"))
-            uses_count = int(row.get("uses_count") or 0)
-            display_name = self._exercise_display_name(row, lang=lang).lower()
-            return (0 if is_favorite else 1, 0 if is_featured else 1, -uses_count, display_name)
-
-        rows = sorted(rows, key=_sort_key)
 
         normalized = [
             {
@@ -278,7 +274,7 @@ class Db:
             }
             for row in rows
         ]
-        return normalized[:limit]
+        return normalized
 
     def toggle_featured(self, exercise_id: int) -> bool:
         exercise_id_int = int(exercise_id)
