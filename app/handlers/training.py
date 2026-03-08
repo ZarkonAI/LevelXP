@@ -3,10 +3,11 @@ import re
 from typing import List, Optional
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 from app import db as db_module
 from app import texts
 from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb, translate_exercise_actions_kb
+from app.keyboards_inline import category_inline_kb, exercises_inline_kb, mode_inline_kb
 from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -107,6 +108,63 @@ def _format_muscles(primary_muscle: str | None, muscle_map: object) -> str:
         for muscle, _ in secondary[:2]:
             labels.append(MUSCLE_LABELS.get(muscle, muscle))
     return ", ".join(labels) if labels else "—"
+
+
+def _format_technique_points(instructions: object) -> str:
+    points: list[str] = []
+    if isinstance(instructions, list):
+        points = [str(item).strip(" -•\n\t") for item in instructions if str(item).strip()]
+    elif isinstance(instructions, str):
+        parts = re.split(r"[\n\r]+|\s*\d+[\)\.]\s*|\s*[•\-]\s*", instructions)
+        points = [part.strip() for part in parts if part and part.strip()]
+
+    points = [point for point in points if point]
+    if not points:
+        return "—"
+
+    shown = points[:4]
+    if len(shown) < 2:
+        shown = points[:2]
+    return "\n".join(f"• {point}" for point in shown)
+
+
+async def _send_exercise_preview(message: Message, exercise: dict):
+    display_name = str(exercise.get("display_name") or exercise.get("name") or "Упражнение")
+    caption = texts.EXERCISE_PREVIEW_TEMPLATE.format(
+        display_name=display_name,
+        muscles=_format_muscles(exercise.get("primary_muscle"), exercise.get("muscle_map")),
+        equipment=_format_equipment(exercise.get("equipment")),
+        technique=_format_technique_points(exercise.get("instructions")),
+    )
+    image_url = str(exercise.get("image_url") or "").strip()
+    if image_url:
+        try:
+            await message.answer_photo(photo=image_url, caption=caption)
+            return
+        except Exception:
+            await message.answer(f"{caption}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
+            return
+    await message.answer(caption)
+
+
+async def _load_exercises_page(state: FSMContext, db, user_id: int, *, page: int):
+    data = await state.get_data()
+    page = max(int(page or 0), 0)
+    category = data.get("selected_category")
+    search_query = data.get("search_query")
+    exercise_lang = data.get("exercise_lang") or "ru"
+    raw = db.list_exercises(
+        user_id=user_id,
+        limit=13,
+        offset=page * 12,
+        primary_muscle=category,
+        query=search_query,
+        lang=exercise_lang,
+    )
+    exercises = raw[:12]
+    has_next = len(raw) > 12
+    await state.update_data(exercises=exercises, exercises_page=page)
+    return exercises, has_next
 
 
 async def _send_translate_card(message: Message, exercise: dict):
@@ -244,10 +302,102 @@ async def quick_log_start(message: Message, state: FSMContext):
     try:
         await state.clear()
         await state.set_state(QuickLogStates.choose_mode)
-        await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+        await message.answer(texts.CHOOSE_MODE, reply_markup=mode_inline_kb())
     except Exception:
         log.exception("quick_log_start failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.callback_query(QuickLogStates.choose_mode, F.data.startswith("mode:"))
+async def choose_mode_inline(callback: CallbackQuery, state: FSMContext, db):
+    value = str(callback.data or "").split(":", 1)[1]
+    if value not in {"strength", "pattern"}:
+        await callback.answer()
+        return
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    await state.update_data(
+        mode=value,
+        exercises=[],
+        selected_category=None,
+        search_query=None,
+        exercises_page=0,
+        exercise_lang=db.get_exercise_lang(user_id=int(user["id"])),
+    )
+    await state.set_state(QuickLogStates.choose_category)
+    await callback.message.answer(texts.CHOOSE_CATEGORY, reply_markup=category_inline_kb())
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_category, F.data == "back:mode")
+async def back_to_mode_inline(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(QuickLogStates.choose_mode)
+    await callback.message.answer(texts.CHOOSE_MODE, reply_markup=mode_inline_kb())
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_category, F.data == "search:open")
+async def open_search_inline(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(search_query=None, selected_category=None)
+    await state.set_state(QuickLogStates.search_query)
+    await callback.message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_category, F.data.startswith("cat:"))
+async def choose_category_inline(callback: CallbackQuery, state: FSMContext, db):
+    category = str(callback.data or "").split(":", 1)[1]
+    if category not in MUSCLE_LABELS:
+        await callback.answer()
+        return
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    await state.update_data(selected_category=category, search_query=None, exercise_lang=db.get_exercise_lang(user_id=int(user["id"])))
+    exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=0)
+    if not exercises:
+        await callback.message.answer(texts.SEARCH_EMPTY, reply_markup=category_inline_kb())
+        await callback.answer()
+        return
+    await state.set_state(QuickLogStates.choose_exercise_inline)
+    await callback.message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=0, has_next=has_next))
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "back:cat")
+async def back_to_category_inline(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(QuickLogStates.choose_category)
+    await callback.message.answer(texts.CHOOSE_CATEGORY, reply_markup=category_inline_kb())
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data.startswith("page:"))
+async def paginate_exercises_inline(callback: CallbackQuery, state: FSMContext, db):
+    page = max(int(str(callback.data or "").split(":", 1)[1]), 0)
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page)
+    if not exercises and page > 0:
+        exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page - 1)
+        page -= 1
+    await state.set_state(QuickLogStates.choose_exercise_inline)
+    await callback.message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=page, has_next=has_next))
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data.startswith("ex:"))
+async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db):
+    exercise_id = int(str(callback.data or "").split(":", 1)[1])
+    exercise = db.get_exercise(exercise_id=exercise_id)
+    display_name = str(exercise.get("display_name") or exercise.get("name") or "Упражнение")
+    await state.update_data(
+        exercise_id=exercise_id,
+        exercise_name=display_name,
+        exercise_display_name=display_name,
+        image_url=exercise.get("image_url"),
+        selected_exercise_id=exercise_id,
+        selected_exercise_name_en=exercise.get("name") or display_name,
+    )
+    await _send_exercise_preview(callback.message, exercise)
+    data = await state.get_data()
+    await _goto_enter_weight(callback.message, state, data)
+    await callback.answer()
 @router.message(F.text == "❌ Отмена")
 async def cancel_anywhere(message: Message, state: FSMContext):
     try:
@@ -273,8 +423,7 @@ async def back_from_choose_exercise(message: Message, state: FSMContext):
 @router.message(QuickLogStates.search_query, F.text == "↩️ Назад")
 async def back_from_search_query(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
-    data = await state.get_data()
-    await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb(translate_mode=data.get("translate_mode") is True))
+    await message.answer(texts.CHOOSE_CATEGORY, reply_markup=category_inline_kb())
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
 async def back_from_custom_name(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
@@ -556,12 +705,13 @@ async def search_query(message: Message, state: FSMContext, db):
             return
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
-        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, query=query, lang=exercise_lang)
+        await state.update_data(search_query=query, selected_category=None, exercise_lang=exercise_lang)
+        exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=0)
         if not exercises:
             await message.answer(texts.SEARCH_EMPTY, reply_markup=back_cancel_kb())
             return
-        await state.update_data(exercises=exercises)
-        await _show_choose_exercise(message, state)
+        await state.set_state(QuickLogStates.choose_exercise_inline)
+        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=0, has_next=has_next))
     except Exception:
         log.exception("search_query failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
