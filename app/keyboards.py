@@ -151,7 +151,7 @@ def exercise_card_kb(*, is_favorite: bool, is_admin: bool = False, is_featured: 
     favorite_text = "⭐ Убрать из избранного" if is_favorite else "⭐ В избранное"
     keyboard = [[KeyboardButton(text=favorite_text)]]
     if is_admin:
-        featured_text = "🔥 Featured: Выкл" if is_featured else "🔥 Featured: Вкл"
+        featured_text = "🔥 Рекомендуемое: Выкл" if is_featured else "🔥 Рекомендуемое: Вкл"
         keyboard.append([KeyboardButton(text=featured_text)])
     keyboard.extend(
         [

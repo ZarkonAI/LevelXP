@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import lru_cache
 import os
 from dotenv import load_dotenv
 
@@ -12,9 +13,9 @@ def _req(name: str) -> str:
     return v
 
 
-def _parse_admin_ids(raw: str | None) -> tuple[int, ...]:
+def _parse_admin_ids(raw: str | None) -> list[int]:
     if not raw:
-        return tuple()
+        return []
     values: list[int] = []
     for chunk in raw.split(","):
         item = chunk.strip()
@@ -24,7 +25,7 @@ def _parse_admin_ids(raw: str | None) -> tuple[int, ...]:
             values.append(int(item))
         except ValueError:
             continue
-    return tuple(values)
+    return values
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,7 @@ class Settings:
     supabase_key: str
     env: str
     log_level: str
-    admin_ids: tuple[int, ...]
+    admin_ids: list[int]
     support_username: str
 
 
@@ -46,6 +47,7 @@ def _get_supabase_key() -> str:
     return _req("SUPABASE_KEY")
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings(
         bot_token=_req("BOT_TOKEN"),
@@ -56,3 +58,7 @@ def get_settings() -> Settings:
         admin_ids=_parse_admin_ids(os.getenv("ADMIN_IDS")),
         support_username=os.getenv("SUPPORT_USERNAME", ""),
     )
+
+
+def is_admin(telegram_id: int) -> bool:
+    return int(telegram_id) in get_settings().admin_ids

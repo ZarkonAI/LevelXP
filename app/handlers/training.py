@@ -6,8 +6,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from app import db as db_module
 from app import texts
-from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, training_menu_kb, translate_exercise_actions_kb
-from app.keyboards_inline import category_inline_kb, exercises_inline_kb, mode_inline_kb
+from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, translate_exercise_actions_kb
+from app.keyboards_inline import category_inline_kb, exercises_inline_kb, mode_inline_kb, training_start_inline_kb
 from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -110,31 +110,35 @@ def _format_muscles(primary_muscle: str | None, muscle_map: object) -> str:
     return ", ".join(labels) if labels else "—"
 
 
-def _format_technique_points(instructions: object) -> str:
+def _extract_points(raw_instructions: object) -> list[str]:
     points: list[str] = []
-    if isinstance(instructions, list):
-        points = [str(item).strip(" -•\n\t") for item in instructions if str(item).strip()]
-    elif isinstance(instructions, str):
-        parts = re.split(r"[\n\r]+|\s*\d+[\)\.]\s*|\s*[•\-]\s*", instructions)
+    if isinstance(raw_instructions, list):
+        points = [str(item).strip(" -•\n\t") for item in raw_instructions if str(item).strip()]
+    elif isinstance(raw_instructions, str):
+        parts = re.split(r"[\n\r]+|\s*\d+[\)\.]\s*|\s*[•\-]\s*", raw_instructions)
         points = [part.strip() for part in parts if part and part.strip()]
+    return [point for point in points if point]
 
-    points = [point for point in points if point]
+
+def _format_technique_points(exercise: dict, exercise_lang: str) -> str:
+    preferred = _extract_points(exercise.get("instructions_ru")) if exercise_lang == "ru" else []
+    fallback = _extract_points(exercise.get("instructions"))
+    points = preferred or fallback
     if not points:
         return "—"
-
     shown = points[:4]
     if len(shown) < 2:
         shown = points[:2]
     return "\n".join(f"• {point}" for point in shown)
 
 
-async def _send_exercise_preview(message: Message, exercise: dict):
+async def _send_exercise_preview(message: Message, exercise: dict, exercise_lang: str):
     display_name = str(exercise.get("display_name") or exercise.get("name") or "Упражнение")
     caption = texts.EXERCISE_PREVIEW_TEMPLATE.format(
         display_name=display_name,
         muscles=_format_muscles(exercise.get("primary_muscle"), exercise.get("muscle_map")),
         equipment=_format_equipment(exercise.get("equipment")),
-        technique=_format_technique_points(exercise.get("instructions")),
+        technique=_format_technique_points(exercise, exercise_lang),
     )
     image_url = str(exercise.get("image_url") or "").strip()
     if image_url:
@@ -259,6 +263,28 @@ def _validate_name(name: str) -> bool:
     low = clean.lower()
     blocked = ("http", "https", "t.me", ".com", ".ru", ".net", ".org")
     return not any(token in low for token in blocked)
+
+
+async def _remember_wizard_message(state: FSMContext, message: Message):
+    await state.update_data(wizard_message_id=message.message_id, wizard_chat_id=message.chat.id)
+
+
+async def _edit_wizard_text(state: FSMContext, bot, text: str, reply_markup):
+    data = await state.get_data()
+    message_id = data.get("wizard_message_id")
+    chat_id = data.get("wizard_chat_id")
+    if not message_id or not chat_id:
+        return
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=int(message_id), text=text, reply_markup=reply_markup)
+    except Exception:
+        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=int(message_id), reply_markup=reply_markup)
+
+
+def _exercise_page_title(page: int, has_next: bool) -> str:
+    total_label = "?" if has_next else str(page + 1)
+    return f"Выбери упражнение (стр. {page + 1}/{total_label})"
+
 async def _to_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(texts.MENU, reply_markup=main_menu_kb())
@@ -291,19 +317,42 @@ async def _goto_enter_weight(message: Message, state: FSMContext, data: dict):
 async def training_menu(message: Message, state: FSMContext):
     try:
         await state.clear()
-        await message.answer(texts.TRAINING_CHOOSE, reply_markup=training_menu_kb())
+        wizard = await message.answer(texts.TRAINING_CHOOSE, reply_markup=training_start_inline_kb())
+        await _remember_wizard_message(state, wizard)
     except Exception:
         log.exception("training_menu failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-@router.message(F.text == "⚡ Быстрая запись")
-async def quick_log_start(message: Message, state: FSMContext):
+
+
+@router.callback_query(F.data == "quick:start")
+async def quick_log_start(callback: CallbackQuery, state: FSMContext):
     try:
-        await state.clear()
         await state.set_state(QuickLogStates.choose_mode)
-        await message.answer(texts.CHOOSE_MODE, reply_markup=mode_inline_kb())
+        await _edit_wizard_text(state, callback.bot, texts.CHOOSE_MODE, mode_inline_kb())
+        await callback.answer()
     except Exception:
         log.exception("quick_log_start failed")
-        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+        await callback.answer(texts.TECH_ERROR, show_alert=True)
+
+
+
+
+@router.callback_query(F.data == "menu:back")
+async def wizard_back_to_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    if callback.message:
+        await callback.message.answer(texts.MENU, reply_markup=main_menu_kb())
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_mode, F.data == "back:start")
+async def mode_back_to_start(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    if data.get("wizard_message_id"):
+        await state.update_data(wizard_message_id=data.get("wizard_message_id"), wizard_chat_id=data.get("wizard_chat_id"))
+    await _edit_wizard_text(state, callback.bot, texts.TRAINING_CHOOSE, training_start_inline_kb())
+    await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_mode, F.data.startswith("mode:"))
@@ -322,14 +371,14 @@ async def choose_mode_inline(callback: CallbackQuery, state: FSMContext, db):
         exercise_lang=db.get_exercise_lang(user_id=int(user["id"])),
     )
     await state.set_state(QuickLogStates.choose_category)
-    await callback.message.answer(texts.CHOOSE_CATEGORY, reply_markup=category_inline_kb())
+    await _edit_wizard_text(state, callback.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
     await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_category, F.data == "back:mode")
 async def back_to_mode_inline(callback: CallbackQuery, state: FSMContext):
     await state.set_state(QuickLogStates.choose_mode)
-    await callback.message.answer(texts.CHOOSE_MODE, reply_markup=mode_inline_kb())
+    await _edit_wizard_text(state, callback.bot, texts.CHOOSE_MODE, mode_inline_kb())
     await callback.answer()
 
 
@@ -337,7 +386,7 @@ async def back_to_mode_inline(callback: CallbackQuery, state: FSMContext):
 async def open_search_inline(callback: CallbackQuery, state: FSMContext):
     await state.update_data(search_query=None, selected_category=None, search_origin="category")
     await state.set_state(QuickLogStates.search_query)
-    await callback.message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+    await _edit_wizard_text(state, callback.bot, texts.SEARCH_PROMPT, None)
     await callback.answer()
 
 
@@ -345,7 +394,7 @@ async def open_search_inline(callback: CallbackQuery, state: FSMContext):
 async def open_search_from_exercises_inline(callback: CallbackQuery, state: FSMContext):
     await state.update_data(search_query=None, search_origin="exercise_inline")
     await state.set_state(QuickLogStates.search_query)
-    await callback.message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+    await _edit_wizard_text(state, callback.bot, texts.SEARCH_PROMPT, None)
     await callback.answer()
 
 
@@ -359,18 +408,18 @@ async def choose_category_inline(callback: CallbackQuery, state: FSMContext, db)
     await state.update_data(selected_category=category, search_query=None, exercise_lang=db.get_exercise_lang(user_id=int(user["id"])))
     exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=0)
     if not exercises:
-        await callback.message.answer(texts.SEARCH_EMPTY, reply_markup=category_inline_kb())
+        await _edit_wizard_text(state, callback.bot, texts.SEARCH_EMPTY, category_inline_kb())
         await callback.answer()
         return
     await state.set_state(QuickLogStates.choose_exercise_inline)
-    await callback.message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=0, has_next=has_next))
+    await _edit_wizard_text(state, callback.bot, _exercise_page_title(page=0, has_next=has_next), exercises_inline_kb(exercises, page=0, has_next=has_next))
     await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "back:cat")
 async def back_to_category_inline(callback: CallbackQuery, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
-    await callback.message.answer(texts.CHOOSE_CATEGORY, reply_markup=category_inline_kb())
+    await _edit_wizard_text(state, callback.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
     await callback.answer()
 
 
@@ -383,14 +432,16 @@ async def paginate_exercises_inline(callback: CallbackQuery, state: FSMContext, 
         exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page - 1)
         page -= 1
     await state.set_state(QuickLogStates.choose_exercise_inline)
-    await callback.message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=page, has_next=has_next))
+    await _edit_wizard_text(state, callback.bot, _exercise_page_title(page=page, has_next=has_next), exercises_inline_kb(exercises, page=page, has_next=has_next))
     await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_exercise_inline, F.data.startswith("ex:"))
 async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db):
     exercise_id = int(str(callback.data or "").split(":", 1)[1])
-    exercise = db.get_exercise(exercise_id=exercise_id)
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
+    exercise = db.get_exercise(exercise_id=exercise_id, user_id=int(user["id"]))
     display_name = str(exercise.get("display_name") or exercise.get("name") or "Упражнение")
     await state.update_data(
         exercise_id=exercise_id,
@@ -399,8 +450,9 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
         image_url=exercise.get("image_url"),
         selected_exercise_id=exercise_id,
         selected_exercise_name_en=exercise.get("name") or display_name,
+        exercise_is_featured=bool(exercise.get("is_featured")),
     )
-    await _send_exercise_preview(callback.message, exercise)
+    await _send_exercise_preview(callback.message, exercise, exercise_lang=exercise_lang)
     data = await state.get_data()
     await _goto_enter_weight(callback.message, state, data)
     await callback.answer()
@@ -434,10 +486,10 @@ async def back_from_search_query(message: Message, state: FSMContext, db):
         page = int(data.get("exercises_page") or 0)
         exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page)
         await state.set_state(QuickLogStates.choose_exercise_inline)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=page, has_next=has_next))
+        await _edit_wizard_text(state, message.bot, _exercise_page_title(page=page, has_next=has_next), exercises_inline_kb(exercises, page=page, has_next=has_next))
         return
     await state.set_state(QuickLogStates.choose_category)
-    await message.answer(texts.CHOOSE_CATEGORY, reply_markup=category_inline_kb())
+    await _edit_wizard_text(state, message.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
 async def back_from_custom_name(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
@@ -600,7 +652,7 @@ async def remove_from_favorite(message: Message, state: FSMContext, db):
     await _show_selected_exercise_card(message, state, db, show_status=True)
 
 
-@router.message(QuickLogStates.choose_exercise, F.text.startswith("🔥 Featured:"))
+@router.message(QuickLogStates.choose_exercise, F.text.startswith("🔥 Рекомендуемое:"))
 async def toggle_featured_flag(message: Message, state: FSMContext, db):
     data = await state.get_data()
     if data.get("translate_mode"):
@@ -714,16 +766,16 @@ async def search_query(message: Message, state: FSMContext, db):
     try:
         query = (message.text or "").strip()
         if not query:
-            await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+            await _edit_wizard_text(state, message.bot, texts.SEARCH_PROMPT, None)
             return
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         await state.update_data(search_query=query, selected_category=None)
         exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=0)
         if not exercises:
-            await message.answer(texts.SEARCH_EMPTY, reply_markup=back_cancel_kb())
+            await _edit_wizard_text(state, message.bot, texts.SEARCH_EMPTY, None)
             return
         await state.set_state(QuickLogStates.choose_exercise_inline)
-        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=0, has_next=has_next))
+        await _edit_wizard_text(state, message.bot, _exercise_page_title(page=0, has_next=has_next), exercises_inline_kb(exercises, page=0, has_next=has_next))
     except Exception:
         log.exception("search_query failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
