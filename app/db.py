@@ -233,10 +233,10 @@ class Db:
         offset: int = 0,
         primary_muscle: Optional[str] = None,
         query: Optional[str] = None,
-        lang: str = "ru",
     ) -> List[Dict[str, Any]]:
         safe_limit = max(int(limit or 12), 1)
         safe_offset = max(int(offset or 0), 0)
+        exercise_lang = self.get_exercise_lang(user_id=int(user_id))
         favorite_ids = self.list_favorite_ids(user_id=int(user_id))
 
         def _build_query(include_uses_count: bool = True):
@@ -288,7 +288,7 @@ class Db:
                 "uses_count": int(row.get("uses_count") or 0),
                 "is_featured": bool(row.get("is_featured")),
                 "is_favorite": int(row.get("id") or 0) in favorite_ids,
-                "display_name": self._exercise_display_name(row, lang=lang),
+                "display_name": self._exercise_display_name(row, lang=exercise_lang),
             }
             for row in rows
         ]
