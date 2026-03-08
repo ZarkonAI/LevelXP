@@ -238,24 +238,42 @@ class Db:
         safe_limit = max(int(limit or 12), 1)
         safe_offset = max(int(offset or 0), 0)
         favorite_ids = self.list_favorite_ids(user_id=int(user_id))
-        query_builder = self.client.table("exercises").select(
-            "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,uses_count,is_featured,created_at"
-        )
-        query_builder = query_builder.eq("is_active", True)
-        query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
+
+        def _build_query(include_uses_count: bool = True):
+            select_fields = "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at"
+            if include_uses_count:
+                select_fields = f"{select_fields},uses_count"
+
+            query_builder = self.client.table("exercises").select(select_fields)
+            query_builder = query_builder.eq("is_active", True)
+            query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
+
+            if muscle_filter:
+                query_builder = query_builder.eq("primary_muscle", muscle_filter)
+
+            if search_query:
+                query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
+
+            query_builder = query_builder.order("is_featured", desc=True)
+            if include_uses_count:
+                query_builder = query_builder.order("uses_count", desc=True)
+            query_builder = query_builder.order("name", desc=False)
+            return query_builder
+
+        def _is_uses_count_missing(exc: Exception) -> bool:
+            message = str(exc).lower()
+            return "column" in message and "uses_count" in message
 
         muscle_filter = (primary_muscle or "").strip().lower()
-        if muscle_filter:
-            query_builder = query_builder.eq("primary_muscle", muscle_filter)
-
         search_query = (query or "").strip()
-        if search_query:
-            query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
-        query_builder = query_builder.order("is_featured", desc=True)
-        query_builder = query_builder.order("uses_count", desc=True)
-        query_builder = query_builder.order("name", desc=False)
-
-        res = query_builder.range(safe_offset, safe_offset + safe_limit - 1).execute()
+        query_builder = _build_query(include_uses_count=True)
+        try:
+            res = query_builder.range(safe_offset, safe_offset + safe_limit - 1).execute()
+        except Exception as exc:
+            if not _is_uses_count_missing(exc):
+                raise
+            query_builder = _build_query(include_uses_count=False)
+            res = query_builder.range(safe_offset, safe_offset + safe_limit - 1).execute()
         rows = res.data or []
 
         normalized = [

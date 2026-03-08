@@ -24,7 +24,6 @@ def category_inline_kb() -> InlineKeyboardMarkup:
     for idx in range(0, len(MUSCLE_BUTTONS), 2):
         chunk = MUSCLE_BUTTONS[idx : idx + 2]
         keyboard.append([InlineKeyboardButton(text=label, callback_data=f"cat:{value}") for label, value in chunk])
-    keyboard.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="search:open")])
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back:mode")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -46,5 +45,6 @@ def exercises_inline_kb(exercises: list[dict], page: int, has_next: bool) -> Inl
     if nav_row:
         keyboard.append(nav_row)
 
+    keyboard.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="search:open")])
     keyboard.append([InlineKeyboardButton(text="Назад", callback_data="back:cat")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
