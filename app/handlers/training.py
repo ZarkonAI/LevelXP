@@ -152,14 +152,12 @@ async def _load_exercises_page(state: FSMContext, db, user_id: int, *, page: int
     page = max(int(page or 0), 0)
     category = data.get("selected_category")
     search_query = data.get("search_query")
-    exercise_lang = data.get("exercise_lang") or "ru"
     raw = db.list_exercises(
         user_id=user_id,
         limit=13,
         offset=page * 12,
         primary_muscle=category,
-        query=search_query,
-        lang=exercise_lang,
+        query=search_query
     )
     exercises = raw[:12]
     has_next = len(raw) > 12
@@ -525,8 +523,7 @@ async def choose_category(message: Message, state: FSMContext, db):
             return
 
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
-        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, primary_muscle=selected_muscle, lang=exercise_lang)
+        exercises = db.list_exercises(user_id=int(user["id"]), limit=12, primary_muscle=selected_muscle)
         if not exercises:
             data = await state.get_data()
             await message.answer(texts.SEARCH_EMPTY, reply_markup=exercise_category_kb(translate_mode=data.get("translate_mode") is True))
@@ -720,8 +717,7 @@ async def search_query(message: Message, state: FSMContext, db):
             await message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
             return
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
-        await state.update_data(search_query=query, selected_category=None, exercise_lang=exercise_lang)
+        await state.update_data(search_query=query, selected_category=None)
         exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=0)
         if not exercises:
             await message.answer(texts.SEARCH_EMPTY, reply_markup=back_cancel_kb())
