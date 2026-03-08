@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
 
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
 def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardButton]]:
@@ -38,6 +38,18 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
         input_field_placeholder="Выбери действие…",
     )
 
+
+
+
+def help_inline_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Связаться с поддержкой", url="https://t.me/<SUPPORT_USERNAME>")],
+            [InlineKeyboardButton(text="✍️ Написать в поддержку", callback_data="support:write")],
+            [InlineKeyboardButton(text="➕ Предложить упражнение", callback_data="support:exercise")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="help:back")],
+        ]
+    )
 
 def back_to_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(

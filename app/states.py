@@ -55,3 +55,7 @@ class TemplateBrowseStates(StatesGroup):
 
 class TranslateStates(StatesGroup):
     waiting_name_ru = State()
+
+
+class SupportStates(StatesGroup):
+    waiting_support_text = State()
