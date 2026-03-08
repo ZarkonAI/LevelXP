@@ -34,7 +34,7 @@ async def _send_exercise_media(message: Message, display_name: str, image_url: s
         await message.answer(texts.TRANSLATE_IMAGE_MISSING)
 
 
-async def _show_selected_exercise_card(message: Message, state: FSMContext, db, *, show_status: bool = False):
+async def _show_selected_exercise_card(message: Message, state: FSMContext, db, *, show_status: bool = False, status_text: str | None = None):
     data = await state.get_data()
     exercise_id = data.get("exercise_id")
     if not exercise_id:
@@ -42,15 +42,20 @@ async def _show_selected_exercise_card(message: Message, state: FSMContext, db, 
         return
 
     user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    is_admin = db.is_admin(user)
     is_favorite = db.is_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
+    is_featured = bool(data.get("exercise_is_featured"))
     display_name = str(data.get("exercise_display_name") or data.get("exercise_name") or "Упражнение")
     image_url = str(data.get("image_url") or "").strip()
     await _send_exercise_media(message, display_name, image_url)
     if show_status:
-        status_text = texts.FAVORITE_REMOVED if not is_favorite else texts.FAVORITE_ADDED
-        await message.answer(status_text)
+        info_text = status_text or (texts.FAVORITE_REMOVED if not is_favorite else texts.FAVORITE_ADDED)
+        await message.answer(info_text)
     await state.set_state(QuickLogStates.choose_exercise)
-    await message.answer(texts.EXERCISE_CARD_HINT, reply_markup=exercise_card_kb(is_favorite=is_favorite))
+    await message.answer(
+        texts.EXERCISE_CARD_HINT,
+        reply_markup=exercise_card_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured),
+    )
 
 async def _render_last_category_exercises(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -68,6 +73,7 @@ async def _render_last_category_exercises(message: Message, state: FSMContext):
                 "primary_muscle": row.get("primary_muscle"),
                 "muscle_map": row.get("muscle_map"),
                 "equipment": row.get("equipment"),
+                "is_featured": bool(row.get("is_featured")),
             }
         )
     await state.update_data(exercises=exercises, ex_map=ex_map, selected_category=data.get("last_category") or data.get("selected_category"))
@@ -213,6 +219,7 @@ async def _show_choose_exercise(message: Message, state: FSMContext):
             "primary_muscle": exercise.get("primary_muscle"),
             "muscle_map": exercise.get("muscle_map"),
             "equipment": exercise.get("equipment"),
+            "is_featured": bool(exercise.get("is_featured")),
         }
         for idx, exercise in enumerate(exercises, start=1)
     }
@@ -431,6 +438,31 @@ async def remove_from_favorite(message: Message, state: FSMContext, db):
     await _show_selected_exercise_card(message, state, db, show_status=True)
 
 
+@router.message(QuickLogStates.choose_exercise, F.text.startswith("🔥 Featured:"))
+async def toggle_featured_flag(message: Message, state: FSMContext, db):
+    data = await state.get_data()
+    if data.get("translate_mode"):
+        await message.answer(texts.CHOOSE_EXERCISE_FROM_LIST, reply_markup=exercises_kb(data.get("exercises") or [], translate_mode=True))
+        return
+    exercise_id = data.get("exercise_id")
+    if not exercise_id:
+        await _show_choose_exercise(message, state)
+        return
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    if not db.is_admin(user):
+        await _show_choose_exercise(message, state)
+        return
+    new_value = db.toggle_featured(exercise_id=int(exercise_id))
+    await state.update_data(exercise_is_featured=bool(new_value))
+    await _show_selected_exercise_card(
+        message,
+        state,
+        db,
+        show_status=True,
+        status_text=texts.FEATURED_ENABLED if new_value else texts.FEATURED_DISABLED,
+    )
+
+
 @router.message(QuickLogStates.choose_exercise, F.text == "✅ Продолжить")
 async def continue_after_exercise_card(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -462,6 +494,7 @@ async def choose_exercise(message: Message, state: FSMContext, db):
             exercise_name=display_name,
             exercise_display_name=display_name,
             image_url=image_url or None,
+            exercise_is_featured=bool(selected.get("is_featured")),
             selected_exercise_id=selected["id"],
             selected_exercise_name_en=selected.get("name") or display_name,
             last_category=data.get("selected_category"),

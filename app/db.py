@@ -280,6 +280,16 @@ class Db:
         ]
         return normalized[:limit]
 
+    def toggle_featured(self, exercise_id: int) -> bool:
+        exercise_id_int = int(exercise_id)
+        res = self.client.table("exercises").select("is_featured").eq("id", exercise_id_int).limit(1).execute()
+        if not res.data:
+            raise RuntimeError("Exercise not found")
+        current_value = bool(res.data[0].get("is_featured"))
+        new_value = not current_value
+        self.client.table("exercises").update({"is_featured": new_value}).eq("id", exercise_id_int).execute()
+        return new_value
+
     def is_favorite(self, user_id: int, exercise_id: int) -> bool:
         res = (
             self.client.table("user_favorite_exercises")
