@@ -337,7 +337,15 @@ async def back_to_mode_inline(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(QuickLogStates.choose_category, F.data == "search:open")
 async def open_search_inline(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(search_query=None, selected_category=None)
+    await state.update_data(search_query=None, selected_category=None, search_origin="category")
+    await state.set_state(QuickLogStates.search_query)
+    await callback.message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "search:open")
+async def open_search_from_exercises_inline(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(search_query=None, search_origin="exercise_inline")
     await state.set_state(QuickLogStates.search_query)
     await callback.message.answer(texts.SEARCH_PROMPT, reply_markup=back_cancel_kb())
     await callback.answer()
@@ -421,7 +429,15 @@ async def back_from_choose_exercise(message: Message, state: FSMContext):
     data = await state.get_data()
     await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb(translate_mode=data.get("translate_mode") is True))
 @router.message(QuickLogStates.search_query, F.text == "↩️ Назад")
-async def back_from_search_query(message: Message, state: FSMContext):
+async def back_from_search_query(message: Message, state: FSMContext, db):
+    data = await state.get_data()
+    if data.get("search_origin") == "exercise_inline":
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        page = int(data.get("exercises_page") or 0)
+        exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page)
+        await state.set_state(QuickLogStates.choose_exercise_inline)
+        await message.answer(texts.CHOOSE_EXERCISE, reply_markup=exercises_inline_kb(exercises, page=page, has_next=has_next))
+        return
     await state.set_state(QuickLogStates.choose_category)
     await message.answer(texts.CHOOSE_CATEGORY, reply_markup=category_inline_kb())
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")

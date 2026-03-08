@@ -127,7 +127,7 @@ def exercise_category_kb(*, translate_mode: bool = False) -> ReplyKeyboardMarkup
         keyboard.append([KeyboardButton(text="⏭ Следующее непереведённое")])
     keyboard.extend(
         [
-            [KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")],
+            [KeyboardButton(text="➕ Своё упражнение")],
             [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")],
         ]
     )
