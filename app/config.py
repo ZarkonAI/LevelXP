@@ -35,6 +35,7 @@ class Settings:
     env: str
     log_level: str
     admin_ids: tuple[int, ...]
+    support_username: str
 
 
 def _get_supabase_key() -> str:
@@ -53,4 +54,5 @@ def get_settings() -> Settings:
         env=os.getenv("ENV", "dev"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         admin_ids=_parse_admin_ids(os.getenv("ADMIN_IDS")),
+        support_username=os.getenv("SUPPORT_USERNAME", ""),
     )

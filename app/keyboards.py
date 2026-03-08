@@ -41,10 +41,11 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
 
 
 
-def help_inline_kb() -> InlineKeyboardMarkup:
+def help_inline_kb(support_username: str) -> InlineKeyboardMarkup:
+    support_link = f"https://t.me/{support_username.lstrip('@')}" if support_username else "https://t.me"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Связаться с поддержкой", url="https://t.me/<SUPPORT_USERNAME>")],
+            [InlineKeyboardButton(text="🔗 Связаться с поддержкой", url=support_link)],
             [InlineKeyboardButton(text="✍️ Написать в поддержку", callback_data="support:write")],
             [InlineKeyboardButton(text="➕ Предложить упражнение", callback_data="support:exercise")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="help:back")],
