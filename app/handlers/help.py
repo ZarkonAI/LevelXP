@@ -74,7 +74,7 @@ async def help_back_callback(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(SupportStates.waiting_text, F.text)
-async def support_text_received(message: Message, state: FSMContext, bot, admin_ids: tuple[int, ...]):
+async def support_text_received(message: Message, state: FSMContext, bot, admin_ids: list[int]):
     try:
         text = (message.text or "").strip()
         if not text:
@@ -91,7 +91,8 @@ async def support_text_received(message: Message, state: FSMContext, bot, admin_
             except Exception:
                 log.exception("failed to deliver support ticket to admin_id=%s", admin_id)
 
-        await message.answer(texts.SUPPORT_SENT, reply_markup=main_menu_kb())
+        success_text = texts.SUPPORT_EXERCISE_SENT if kind == "exercise" else texts.SUPPORT_SENT
+        await message.answer(success_text, reply_markup=main_menu_kb())
         await state.clear()
     except Exception:
         log.exception("support_text_received failed")

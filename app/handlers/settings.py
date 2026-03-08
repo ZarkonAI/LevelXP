@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app import texts
+from app.config import is_admin as is_admin_by_env
 from app.keyboards import exercise_lang_kb, main_menu_kb, settings_kb, translate_mode_kb, units_kb
 from app.states import SettingsStates
 
@@ -21,7 +22,7 @@ async def _render_settings(message: Message, db) -> None:
     timezone_value = user.get("timezone") or "UTC+0"
     await message.answer(
         texts.SETTINGS_TEXT.format(units=units, timezone=timezone_value),
-        reply_markup=settings_kb(is_admin=db.is_admin(user)),
+        reply_markup=settings_kb(is_admin=(db.is_admin(user) or is_admin_by_env(message.from_user.id))),
     )
 
 

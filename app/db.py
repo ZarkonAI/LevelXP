@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from supabase import Client, create_client
 
+from app.config import is_admin as is_admin_from_env
+
 log = logging.getLogger("db")
 
 DEFAULT_MUSCLES = {"legs": 0, "back": 0, "chest": 0, "shoulders": 0, "arms": 0, "core": 0}
@@ -100,9 +102,11 @@ class Db:
 
     @staticmethod
     def _exercise_display_name(row: Dict[str, Any], lang: str = "ru") -> str:
-        if lang == "ru" and row.get("name_ru"):
-            return str(row.get("name_ru"))
-        return str(row.get("name") or row.get("name_ru") or "Упражнение")
+        name_ru = str(row.get("name_ru") or "").strip()
+        name_en = str(row.get("name") or "").strip()
+        if lang == "ru" and name_ru:
+            return name_ru
+        return name_en or name_ru or "Упражнение"
 
     def seed_exercises_if_empty(self) -> None:
         """Idempotent seed: если упражнений нет — добавим базовые."""
@@ -133,7 +137,10 @@ class Db:
 
     @staticmethod
     def is_admin(user: Dict[str, Any]) -> bool:
-        return str((user or {}).get("role") or "user").lower() == "admin"
+        role_admin = str((user or {}).get("role") or "user").lower() == "admin"
+        telegram_id = (user or {}).get("telegram_id")
+        env_admin = bool(telegram_id is not None and is_admin_from_env(int(telegram_id)))
+        return role_admin or env_admin
 
     def is_admin_by_id(self, user_id: int) -> bool:
         res = self.client.table("users").select("role").eq("id", user_id).limit(1).execute()
@@ -198,10 +205,10 @@ class Db:
             raise last_exc
         raise RuntimeError("Progress not found")
 
-    def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
+    def get_exercise(self, exercise_id: int, *, user_id: Optional[int] = None) -> Dict[str, Any]:
         res = (
             self.client.table("exercises")
-            .select("id,name,name_ru,image_url,instructions,equipment,primary_muscle,muscle_map")
+            .select("id,name,name_ru,image_url,instructions,instructions_ru,equipment,primary_muscle,muscle_map,is_featured")
             .eq("id", exercise_id)
             .limit(1)
             .execute()
@@ -209,7 +216,8 @@ class Db:
         if not res.data:
             raise RuntimeError("Exercise not found")
         row = res.data[0]
-        row["display_name"] = self._exercise_display_name(row)
+        lang = self.get_exercise_lang(user_id=int(user_id)) if user_id is not None else "ru"
+        row["display_name"] = self._exercise_display_name(row, lang=lang)
         return row
 
     def _validate_exercise_name(self, name: str) -> Optional[str]:
@@ -255,8 +263,6 @@ class Db:
                 query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
 
             query_builder = query_builder.order("is_featured", desc=True)
-            if include_uses_count:
-                query_builder = query_builder.order("uses_count", desc=True)
             query_builder = query_builder.order("name", desc=False)
             return query_builder
 
