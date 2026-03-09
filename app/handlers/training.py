@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from app import db as db_module
 from app import texts
 from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, translate_exercise_actions_kb
-from app.keyboards_inline import category_inline_kb, exercises_inline_kb, mode_inline_kb, training_start_inline_kb
+from app.keyboards_inline import category_inline_kb, exercises_inline_kb, mode_inline_kb, search_prompt_inline_kb, search_results_inline_kb, training_start_inline_kb
 from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -151,22 +151,75 @@ async def _send_exercise_preview(message: Message, exercise: dict, exercise_lang
     await message.answer(caption)
 
 
+def _normalize_for_trigrams(value: str) -> str:
+    clean = re.sub(r"[^\w\s\-]", " ", (value or "").lower(), flags=re.UNICODE)
+    clean = re.sub(r"_", " ", clean)
+    return re.sub(r"\s+", " ", clean).strip()
+
+
+def trigrams(value: str) -> set[str]:
+    normalized = _normalize_for_trigrams(value)
+    if not normalized:
+        return set()
+    if len(normalized) < 3:
+        return {normalized}
+    return {normalized[idx : idx + 3] for idx in range(len(normalized) - 2)}
+
+
+def dice(a: str, b: str) -> float:
+    a_tri = trigrams(a)
+    b_tri = trigrams(b)
+    if not a_tri or not b_tri:
+        return 0.0
+    return (2 * len(a_tri.intersection(b_tri))) / (len(a_tri) + len(b_tri))
+
+
 async def _load_exercises_page(state: FSMContext, db, user_id: int, *, page: int):
     data = await state.get_data()
-    page = max(int(page or 0), 0)
     category = data.get("selected_category")
-    search_query = data.get("search_query")
-    raw = db.list_exercises(
-        user_id=user_id,
-        limit=13,
-        offset=page * 12,
-        primary_muscle=category,
-        query=search_query
-    )
-    exercises = raw[:12]
-    has_next = len(raw) > 12
-    await state.update_data(exercises=exercises, exercises_page=page)
-    return exercises, has_next
+    all_items = db.list_exercises_active_all(user_id=user_id, primary_muscle=category)
+    items, has_next, safe_page = db.list_exercises_page(all_items, page=page, page_size=12)
+    await state.update_data(exercises=items, exercises_page=safe_page)
+    return items, has_next, safe_page
+
+
+async def _show_exercise_list_wizard(state: FSMContext, bot, db, user_id: int, *, page: int = 0):
+    exercises, has_next, safe_page = await _load_exercises_page(state, db, user_id, page=page)
+    if not exercises:
+        await _edit_wizard_text(state, bot, texts.SEARCH_EMPTY, category_inline_kb())
+        await state.set_state(QuickLogStates.choose_category)
+        await state.update_data(wizard_step="choose_category")
+        return
+    await state.set_state(QuickLogStates.choose_exercise_inline)
+    await state.update_data(wizard_step="exercise_list")
+    await _edit_wizard_text(state, bot, _exercise_page_title(page=safe_page, has_next=has_next), exercises_inline_kb(exercises, page=safe_page, has_next=has_next))
+
+
+def _fuzzy_search_exercises(exercises: list[dict], query: str) -> list[dict]:
+    threshold = 0.45
+    result = []
+    for exercise in exercises:
+        name = str(exercise.get("name") or "")
+        name_ru = str(exercise.get("name_ru") or "")
+        score = max(dice(query, name), dice(query, name_ru))
+        if score >= threshold:
+            enriched = dict(exercise)
+            enriched["_score"] = score
+            result.append(enriched)
+    result.sort(key=lambda row: (-float(row.get("_score") or 0), -int(bool(row.get("is_featured"))), str(row.get("name") or "").lower()))
+    return result
+
+
+async def _show_search_results_wizard(state: FSMContext, bot, *, page: int = 0):
+    data = await state.get_data()
+    all_results = data.get("search_results_all") or []
+    page_items, has_next, safe_page = db_module.Db.list_exercises_page(all_results, page=page, page_size=12)
+    total_pages = max((len(all_results) + 11) // 12, 1)
+    await state.update_data(exercises=page_items, search_page=safe_page)
+    await state.set_state(QuickLogStates.search_results)
+    await state.update_data(wizard_step="search_results")
+    title = texts.SEARCH_RESULTS_TITLE.format(page=safe_page + 1, total=total_pages)
+    await _edit_wizard_text(state, bot, title, search_results_inline_kb(page_items, page=safe_page, has_next=has_next))
 
 
 async def _send_translate_card(message: Message, exercise: dict):
@@ -319,6 +372,7 @@ async def training_menu(message: Message, state: FSMContext):
         await state.clear()
         wizard = await message.answer(texts.TRAINING_CHOOSE, reply_markup=training_start_inline_kb())
         await _remember_wizard_message(state, wizard)
+        await state.update_data(wizard_step="choose_mode", category=None, page=0, search_query=None)
     except Exception:
         log.exception("training_menu failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -328,6 +382,7 @@ async def training_menu(message: Message, state: FSMContext):
 async def quick_log_start(callback: CallbackQuery, state: FSMContext):
     try:
         await state.set_state(QuickLogStates.choose_mode)
+        await state.update_data(wizard_step="choose_mode")
         await _edit_wizard_text(state, callback.bot, texts.CHOOSE_MODE, mode_inline_kb())
         await callback.answer()
     except Exception:
@@ -339,8 +394,12 @@ async def quick_log_start(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "menu:back")
 async def wizard_back_to_menu(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
     await state.clear()
+    if data.get("wizard_message_id"):
+        await state.update_data(wizard_message_id=data.get("wizard_message_id"), wizard_chat_id=data.get("wizard_chat_id"))
     if callback.message:
+        await _edit_wizard_text(state, callback.bot, texts.MENU, None)
         await callback.message.answer(texts.MENU, reply_markup=main_menu_kb())
     await callback.answer()
 
@@ -351,6 +410,7 @@ async def mode_back_to_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     if data.get("wizard_message_id"):
         await state.update_data(wizard_message_id=data.get("wizard_message_id"), wizard_chat_id=data.get("wizard_chat_id"))
+    await state.update_data(wizard_step="choose_mode", category=None, page=0, search_query=None)
     await _edit_wizard_text(state, callback.bot, texts.TRAINING_CHOOSE, training_start_inline_kb())
     await callback.answer()
 
@@ -371,6 +431,7 @@ async def choose_mode_inline(callback: CallbackQuery, state: FSMContext, db):
         exercise_lang=db.get_exercise_lang(user_id=int(user["id"])),
     )
     await state.set_state(QuickLogStates.choose_category)
+    await state.update_data(wizard_step="choose_category")
     await _edit_wizard_text(state, callback.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
     await callback.answer()
 
@@ -378,23 +439,24 @@ async def choose_mode_inline(callback: CallbackQuery, state: FSMContext, db):
 @router.callback_query(QuickLogStates.choose_category, F.data == "back:mode")
 async def back_to_mode_inline(callback: CallbackQuery, state: FSMContext):
     await state.set_state(QuickLogStates.choose_mode)
+    await state.update_data(wizard_step="choose_mode")
     await _edit_wizard_text(state, callback.bot, texts.CHOOSE_MODE, mode_inline_kb())
     await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_category, F.data == "search:open")
 async def open_search_inline(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(search_query=None, selected_category=None, search_origin="category")
+    await state.update_data(search_query=None, selected_category=None, search_origin="category", wizard_step="search_wait_query")
     await state.set_state(QuickLogStates.search_query)
-    await _edit_wizard_text(state, callback.bot, texts.SEARCH_PROMPT, None)
+    await _edit_wizard_text(state, callback.bot, texts.SEARCH_PROMPT, search_prompt_inline_kb())
     await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "search:open")
 async def open_search_from_exercises_inline(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(search_query=None, search_origin="exercise_inline")
+    await state.update_data(search_query=None, search_origin="exercise_inline", wizard_step="search_wait_query")
     await state.set_state(QuickLogStates.search_query)
-    await _edit_wizard_text(state, callback.bot, texts.SEARCH_PROMPT, None)
+    await _edit_wizard_text(state, callback.bot, texts.SEARCH_PROMPT, search_prompt_inline_kb())
     await callback.answer()
 
 
@@ -406,19 +468,14 @@ async def choose_category_inline(callback: CallbackQuery, state: FSMContext, db)
         return
     user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
     await state.update_data(selected_category=category, search_query=None, exercise_lang=db.get_exercise_lang(user_id=int(user["id"])))
-    exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=0)
-    if not exercises:
-        await _edit_wizard_text(state, callback.bot, texts.SEARCH_EMPTY, category_inline_kb())
-        await callback.answer()
-        return
-    await state.set_state(QuickLogStates.choose_exercise_inline)
-    await _edit_wizard_text(state, callback.bot, _exercise_page_title(page=0, has_next=has_next), exercises_inline_kb(exercises, page=0, has_next=has_next))
+    await _show_exercise_list_wizard(state, callback.bot, db, int(user["id"]), page=0)
     await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "back:cat")
 async def back_to_category_inline(callback: CallbackQuery, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
+    await state.update_data(wizard_step="choose_category")
     await _edit_wizard_text(state, callback.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
     await callback.answer()
 
@@ -427,16 +484,12 @@ async def back_to_category_inline(callback: CallbackQuery, state: FSMContext):
 async def paginate_exercises_inline(callback: CallbackQuery, state: FSMContext, db):
     page = max(int(str(callback.data or "").split(":", 1)[1]), 0)
     user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
-    exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page)
-    if not exercises and page > 0:
-        exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page - 1)
-        page -= 1
-    await state.set_state(QuickLogStates.choose_exercise_inline)
-    await _edit_wizard_text(state, callback.bot, _exercise_page_title(page=page, has_next=has_next), exercises_inline_kb(exercises, page=page, has_next=has_next))
+    await _show_exercise_list_wizard(state, callback.bot, db, int(user["id"]), page=page)
     await callback.answer()
 
 
 @router.callback_query(QuickLogStates.choose_exercise_inline, F.data.startswith("ex:"))
+@router.callback_query(QuickLogStates.search_results, F.data.startswith("ex:"))
 async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db):
     exercise_id = int(str(callback.data or "").split(":", 1)[1])
     user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
@@ -456,6 +509,37 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
     data = await state.get_data()
     await _goto_enter_weight(callback.message, state, data)
     await callback.answer()
+
+
+@router.callback_query(F.data == "back:search")
+async def back_from_search_inline(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    origin = data.get("search_origin")
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    if origin == "exercise_inline":
+        page = int(data.get("exercises_page") or 0)
+        await _show_exercise_list_wizard(state, callback.bot, db, int(user["id"]), page=page)
+    else:
+        await state.set_state(QuickLogStates.choose_category)
+        await state.update_data(wizard_step="choose_category")
+        await _edit_wizard_text(state, callback.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.search_results, F.data.startswith("search_page:"))
+async def paginate_search_results_inline(callback: CallbackQuery, state: FSMContext):
+    page = max(int(str(callback.data or "").split(":", 1)[1]), 0)
+    await _show_search_results_wizard(state, callback.bot, page=page)
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.search_results, F.data == "search:reset")
+async def search_reset_inline(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(search_query=None, search_results_all=[])
+    await state.set_state(QuickLogStates.choose_category)
+    await state.update_data(wizard_step="choose_category")
+    await _edit_wizard_text(state, callback.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
+    await callback.answer()
 @router.message(F.text == "❌ Отмена")
 async def cancel_anywhere(message: Message, state: FSMContext):
     try:
@@ -470,26 +554,20 @@ async def back_from_choose_mode(message: Message, state: FSMContext):
     await _to_menu(message, state)
 @router.message(QuickLogStates.choose_category, F.text == "↩️ Назад")
 async def back_from_choose_category(message: Message, state: FSMContext):
-    await state.set_state(QuickLogStates.choose_mode)
-    await message.answer(texts.CHOOSE_MODE, reply_markup=mode_kb())
+    await message.answer(texts.USE_INLINE_BACK_HINT)
 
 @router.message(QuickLogStates.choose_exercise, F.text == "↩️ Назад")
 async def back_from_choose_exercise(message: Message, state: FSMContext):
-    await state.set_state(QuickLogStates.choose_category)
-    data = await state.get_data()
-    await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb(translate_mode=data.get("translate_mode") is True))
+    await message.answer(texts.USE_INLINE_BACK_HINT)
 @router.message(QuickLogStates.search_query, F.text == "↩️ Назад")
 async def back_from_search_query(message: Message, state: FSMContext, db):
-    data = await state.get_data()
-    if data.get("search_origin") == "exercise_inline":
-        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        page = int(data.get("exercises_page") or 0)
-        exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=page)
-        await state.set_state(QuickLogStates.choose_exercise_inline)
-        await _edit_wizard_text(state, message.bot, _exercise_page_title(page=page, has_next=has_next), exercises_inline_kb(exercises, page=page, has_next=has_next))
-        return
-    await state.set_state(QuickLogStates.choose_category)
-    await _edit_wizard_text(state, message.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
+    await message.answer(texts.USE_INLINE_BACK_HINT)
+
+
+@router.message(QuickLogStates.choose_exercise_inline, F.text == "↩️ Назад")
+@router.message(QuickLogStates.search_results, F.text == "↩️ Назад")
+async def back_from_inline_wizard_text(message: Message, state: FSMContext):
+    await message.answer(texts.USE_INLINE_BACK_HINT)
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
 async def back_from_custom_name(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
@@ -500,8 +578,10 @@ async def back_from_custom_primary(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.custom_name)
     await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
 @router.message(QuickLogStates.enter_weight, F.text == "↩️ Назад")
-async def back_from_weight(message: Message, state: FSMContext):
-    await _show_choose_exercise(message, state)
+async def back_from_weight(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.enter_reps, F.text == "↩️ Назад")
 async def back_from_reps(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -766,16 +846,16 @@ async def search_query(message: Message, state: FSMContext, db):
     try:
         query = (message.text or "").strip()
         if not query:
-            await _edit_wizard_text(state, message.bot, texts.SEARCH_PROMPT, None)
+            await _edit_wizard_text(state, message.bot, texts.SEARCH_PROMPT, search_prompt_inline_kb())
             return
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        await state.update_data(search_query=query, selected_category=None)
-        exercises, has_next = await _load_exercises_page(state, db, int(user["id"]), page=0)
-        if not exercises:
-            await _edit_wizard_text(state, message.bot, texts.SEARCH_EMPTY, None)
+        all_exercises = db.list_exercises_active_all(user_id=int(user["id"]), primary_muscle=None)
+        results = _fuzzy_search_exercises(all_exercises, query)
+        await state.update_data(search_query=query, selected_category=None, search_results_all=results)
+        if not results:
+            await _edit_wizard_text(state, message.bot, texts.SEARCH_EMPTY, search_prompt_inline_kb())
             return
-        await state.set_state(QuickLogStates.choose_exercise_inline)
-        await _edit_wizard_text(state, message.bot, _exercise_page_title(page=0, has_next=has_next), exercises_inline_kb(exercises, page=0, has_next=has_next))
+        await _show_search_results_wizard(state, message.bot, page=0)
     except Exception:
         log.exception("search_query failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

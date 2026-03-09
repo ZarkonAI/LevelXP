@@ -60,8 +60,43 @@ def exercises_inline_kb(exercises: list[dict], page: int, has_next: bool) -> Inl
     if nav_row:
         keyboard.append(nav_row)
 
+    keyboard.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="search:open")])
     keyboard.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back:cat"),
+        InlineKeyboardButton(text="↩️ В меню", callback_data="menu:back"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def search_prompt_inline_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back:search")],
+            [InlineKeyboardButton(text="↩️ В меню", callback_data="menu:back")],
+        ]
+    )
+
+
+def search_results_inline_kb(exercises: list[dict], page: int, has_next: bool) -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = []
+    for exercise in exercises:
+        exercise_id = int(exercise.get("id") or 0)
+        if exercise_id <= 0:
+            continue
+        label = str(exercise.get("display_name") or exercise.get("name") or "Упражнение")
+        keyboard.append([InlineKeyboardButton(text=label[:64], callback_data=f"ex:{exercise_id}")])
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"search_page:{page - 1}"))
+    if has_next:
+        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"search_page:{page + 1}"))
+    if nav_row:
+        keyboard.append(nav_row)
+
+    keyboard.append([InlineKeyboardButton(text="Сбросить поиск", callback_data="search:reset")])
+    keyboard.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back:search"),
         InlineKeyboardButton(text="↩️ В меню", callback_data="menu:back"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
