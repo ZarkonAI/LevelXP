@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from app import db as db_module
 from app import texts
 from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, translate_exercise_actions_kb
-from app.keyboards_inline import category_inline_kb, exercises_inline_kb, mode_inline_kb, search_prompt_inline_kb, search_results_inline_kb, training_start_inline_kb
+from app.keyboards_inline import category_inline_kb, exercise_card_inline_kb, exercises_inline_kb, mode_inline_kb, search_prompt_inline_kb, search_results_inline_kb, training_start_inline_kb
 from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -46,16 +46,16 @@ async def _show_selected_exercise_card(message: Message, state: FSMContext, db, 
     is_admin = db.is_admin(user)
     is_favorite = db.is_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
     is_featured = bool(data.get("exercise_is_featured"))
-    display_name = str(data.get("exercise_display_name") or data.get("exercise_name") or "Упражнение")
-    image_url = str(data.get("image_url") or "").strip()
-    await _send_exercise_media(message, display_name, image_url)
     if show_status:
         info_text = status_text or (texts.FAVORITE_REMOVED if not is_favorite else texts.FAVORITE_ADDED)
         await message.answer(info_text)
-    await state.set_state(QuickLogStates.choose_exercise)
-    await message.answer(
+    await state.set_state(QuickLogStates.choose_exercise_inline)
+    await state.update_data(wizard_step="exercise_card")
+    await _edit_wizard_text(
+        state,
+        message.bot,
         texts.EXERCISE_CARD_HINT,
-        reply_markup=exercise_card_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured),
+        exercise_card_inline_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured),
     )
 
 async def _render_last_category_exercises(message: Message, state: FSMContext):
@@ -152,7 +152,7 @@ async def _send_exercise_preview(message: Message, exercise: dict, exercise_lang
 
 
 def _normalize_for_trigrams(value: str) -> str:
-    clean = re.sub(r"[^\w\s\-]", " ", (value or "").lower(), flags=re.UNICODE)
+    clean = re.sub(r"[^\w\s\-]", " ", (value or "").lower().replace("ё", "е"), flags=re.UNICODE)
     clean = re.sub(r"_", " ", clean)
     return re.sub(r"\s+", " ", clean).strip()
 
@@ -195,19 +195,52 @@ async def _show_exercise_list_wizard(state: FSMContext, bot, db, user_id: int, *
     await _edit_wizard_text(state, bot, _exercise_page_title(page=safe_page, has_next=has_next), exercises_inline_kb(exercises, page=safe_page, has_next=has_next))
 
 
-def _fuzzy_search_exercises(exercises: list[dict], query: str) -> list[dict]:
-    threshold = 0.45
-    result = []
+def _search_exercises(exercises: list[dict], query: str) -> list[dict]:
+    normalized_query = db_module.Db.normalize_search_text(query)
+    if not normalized_query:
+        return []
+    query_tokens = db_module.Db.search_tokens(normalized_query)
+    query_len = len(normalized_query)
+
+    token_hits: list[dict] = []
+    seen_ids: set[int] = set()
     for exercise in exercises:
-        name = str(exercise.get("name") or "")
-        name_ru = str(exercise.get("name_ru") or "")
-        score = max(dice(query, name), dice(query, name_ru))
-        if score >= threshold:
+        if db_module.Db.token_match(
+            query_tokens=query_tokens,
+            name=str(exercise.get("name") or ""),
+            name_ru=str(exercise.get("name_ru") or ""),
+        ):
             enriched = dict(exercise)
-            enriched["_score"] = score
-            result.append(enriched)
-    result.sort(key=lambda row: (-float(row.get("_score") or 0), -int(bool(row.get("is_featured"))), str(row.get("name") or "").lower()))
-    return result
+            exercise_id = int(enriched.get("id") or 0)
+            if exercise_id > 0 and exercise_id not in seen_ids:
+                seen_ids.add(exercise_id)
+                enriched["_token_hit"] = True
+                token_hits.append(enriched)
+
+    if query_len < 5:
+        token_hits.sort(key=lambda row: (-int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
+        return token_hits
+
+    use_fuzzy = query_len >= 5 or len(token_hits) < 6
+    fuzzy_hits: list[dict] = []
+    if use_fuzzy:
+        threshold = 0.55 if query_len < 7 else 0.45
+        for exercise in exercises:
+            score = max(
+                dice(normalized_query, str(exercise.get("name_ru") or "")),
+                dice(normalized_query, str(exercise.get("name") or "")),
+            )
+            if score >= threshold:
+                enriched = dict(exercise)
+                enriched["_score"] = score
+                exercise_id = int(enriched.get("id") or 0)
+                if exercise_id > 0 and exercise_id not in seen_ids:
+                    seen_ids.add(exercise_id)
+                    fuzzy_hits.append(enriched)
+
+    token_hits.sort(key=lambda row: (-int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
+    fuzzy_hits.sort(key=lambda row: (-float(row.get("_score") or 0), -int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
+    return [*token_hits, *fuzzy_hits]
 
 
 async def _show_search_results_wizard(state: FSMContext, bot, *, page: int = 0):
@@ -506,8 +539,62 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
         exercise_is_featured=bool(exercise.get("is_featured")),
     )
     await _send_exercise_preview(callback.message, exercise, exercise_lang=exercise_lang)
+    await _show_selected_exercise_card(callback.message, state, db)
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "card:back")
+async def exercise_card_back_inline(callback: CallbackQuery, state: FSMContext, db):
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, callback.bot, db, int(user["id"]), page=page)
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "card:continue")
+async def continue_after_exercise_card_inline(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await _goto_enter_weight(callback.message, state, data)
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "card:fav")
+async def toggle_favorite_inline(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    exercise_id = data.get("exercise_id")
+    if not exercise_id:
+        await callback.answer()
+        return
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    is_favorite = db.is_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
+    if is_favorite:
+        db.remove_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
+    else:
+        db.add_favorite(user_id=int(user["id"]), exercise_id=int(exercise_id))
+    await _show_selected_exercise_card(callback.message, state, db, show_status=True)
+    await callback.answer()
+
+
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "card:featured")
+async def toggle_featured_inline(callback: CallbackQuery, state: FSMContext, db):
+    data = await state.get_data()
+    exercise_id = data.get("exercise_id")
+    if not exercise_id:
+        await callback.answer()
+        return
+    user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+    if not db.is_admin(user):
+        await callback.answer()
+        return
+    new_value = db.toggle_featured(exercise_id=int(exercise_id))
+    await state.update_data(exercise_is_featured=bool(new_value))
+    await _show_selected_exercise_card(
+        callback.message,
+        state,
+        db,
+        show_status=True,
+        status_text=texts.FEATURED_ENABLED if new_value else texts.FEATURED_DISABLED,
+    )
     await callback.answer()
 
 
@@ -557,17 +644,30 @@ async def back_from_choose_category(message: Message, state: FSMContext):
     await message.answer(texts.USE_INLINE_BACK_HINT)
 
 @router.message(QuickLogStates.choose_exercise, F.text == "↩️ Назад")
-async def back_from_choose_exercise(message: Message, state: FSMContext):
-    await message.answer(texts.USE_INLINE_BACK_HINT)
+async def back_from_choose_exercise(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.search_query, F.text == "↩️ Назад")
 async def back_from_search_query(message: Message, state: FSMContext, db):
-    await message.answer(texts.USE_INLINE_BACK_HINT)
+    data = await state.get_data()
+    origin = data.get("search_origin")
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    if origin == "exercise_inline":
+        page = int(data.get("exercises_page") or 0)
+        await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
+        return
+    await state.set_state(QuickLogStates.choose_category)
+    await state.update_data(wizard_step="choose_category")
+    await _edit_wizard_text(state, message.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
 
 
 @router.message(QuickLogStates.choose_exercise_inline, F.text == "↩️ Назад")
 @router.message(QuickLogStates.search_results, F.text == "↩️ Назад")
-async def back_from_inline_wizard_text(message: Message, state: FSMContext):
-    await message.answer(texts.USE_INLINE_BACK_HINT)
+async def back_from_inline_wizard_text(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
 async def back_from_custom_name(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.choose_category)
@@ -583,34 +683,30 @@ async def back_from_weight(message: Message, state: FSMContext, db):
     page = int((await state.get_data()).get("exercises_page") or 0)
     await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.enter_reps, F.text == "↩️ Назад")
-async def back_from_reps(message: Message, state: FSMContext):
-    data = await state.get_data()
-    await state.set_state(QuickLogStates.enter_weight)
-    await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+async def back_from_reps(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.enter_sets, F.text == "↩️ Назад")
-async def back_from_sets(message: Message, state: FSMContext):
-    data = await state.get_data()
-    await state.set_state(QuickLogStates.enter_reps)
-    await message.answer(f"{texts.ENTER_REPS}{_prefill_hint(data.get('prefill_reps'))}", reply_markup=back_cancel_kb())
+async def back_from_sets(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.enter_rest_single, F.text == "↩️ Назад")
-async def back_from_rest_single(message: Message, state: FSMContext):
-    data = await state.get_data()
-    await state.set_state(QuickLogStates.enter_sets)
-    await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+async def back_from_rest_single(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.enter_rest_pattern, F.text == "↩️ Назад")
-async def back_from_rest_pattern(message: Message, state: FSMContext):
-    data = await state.get_data()
-    await state.set_state(QuickLogStates.enter_sets)
-    await message.answer(f"{texts.ENTER_SETS}{_prefill_hint(data.get('prefill_sets'))}", reply_markup=back_cancel_kb())
+async def back_from_rest_pattern(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.confirm, F.text == "↩️ Назад")
-async def back_from_confirm(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if data.get("mode") == "pattern":
-        await state.set_state(QuickLogStates.enter_rest_pattern)
-        await message.answer(f"{texts.ENTER_REST_PATTERN}{_prefill_hint(data.get('prefill_rest_pattern_text'), ' мин')}", reply_markup=back_cancel_kb())
-    else:
-        await state.set_state(QuickLogStates.enter_rest_single)
-        await message.answer(f"{texts.ENTER_REST_SINGLE}{_prefill_hint(data.get('prefill_rest_minutes'), ' мин')}", reply_markup=back_cancel_kb())
+async def back_from_confirm(message: Message, state: FSMContext, db):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+    page = int((await state.get_data()).get("exercises_page") or 0)
+    await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.choose_mode)
 async def choose_mode(message: Message, state: FSMContext, db):
     try:
@@ -850,7 +946,7 @@ async def search_query(message: Message, state: FSMContext, db):
             return
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         all_exercises = db.list_exercises_active_all(user_id=int(user["id"]), primary_muscle=None)
-        results = _fuzzy_search_exercises(all_exercises, query)
+        results = _search_exercises(all_exercises, query)
         await state.update_data(search_query=query, selected_category=None, search_results_all=results)
         if not results:
             await _edit_wizard_text(state, message.bot, texts.SEARCH_EMPTY, search_prompt_inline_kb())
