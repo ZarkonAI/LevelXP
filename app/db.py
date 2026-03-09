@@ -345,6 +345,26 @@ class Db:
         items = exercises[start:end]
         has_next = end < total
         return items, has_next, safe_page
+
+    @staticmethod
+    def normalize_search_text(value: str) -> str:
+        normalized = str(value or "").lower().replace("ё", "е")
+        normalized = re.sub(r"[^0-9a-zа-я\-\s]", " ", normalized, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def search_tokens(value: str) -> list[str]:
+        normalized = Db.normalize_search_text(value)
+        return [token for token in normalized.split(" ") if token]
+
+    @staticmethod
+    def token_match(*, query_tokens: list[str], name: str, name_ru: str) -> bool:
+        if not query_tokens:
+            return False
+        hay_name = Db.normalize_search_text(name)
+        hay_name_ru = Db.normalize_search_text(name_ru)
+        return any(token in hay_name or token in hay_name_ru for token in query_tokens)
+
     def toggle_featured(self, exercise_id: int) -> bool:
         exercise_id_int = int(exercise_id)
         res = self.client.table("exercises").select("is_featured").eq("id", exercise_id_int).limit(1).execute()

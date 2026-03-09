@@ -100,3 +100,21 @@ def search_results_inline_kb(exercises: list[dict], page: int, has_next: bool) -
         InlineKeyboardButton(text="↩️ В меню", callback_data="menu:back"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def exercise_card_inline_kb(*, is_favorite: bool, is_admin: bool = False, is_featured: bool = False) -> InlineKeyboardMarkup:
+    favorite_text = "⭐ Убрать из избранного" if is_favorite else "⭐ В избранное"
+    keyboard: list[list[InlineKeyboardButton]] = [[InlineKeyboardButton(text=favorite_text, callback_data="card:fav")]]
+    if is_admin:
+        featured_text = "🔥 Рекомендуемое: Выкл" if is_featured else "🔥 Рекомендуемое: Вкл"
+        keyboard.append([InlineKeyboardButton(text=featured_text, callback_data="card:featured")])
+    keyboard.extend(
+        [
+            [InlineKeyboardButton(text="✅ Продолжить", callback_data="card:continue")],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="card:back"),
+                InlineKeyboardButton(text="↩️ В меню", callback_data="menu:back"),
+            ],
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
