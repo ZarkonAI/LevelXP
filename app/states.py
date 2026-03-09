@@ -7,6 +7,7 @@ class QuickLogStates(StatesGroup):
     choose_exercise = State()
     choose_exercise_inline = State()
     search_query = State()
+    search_results = State()
     custom_name = State()
     custom_primary_muscle = State()
     enter_weight = State()

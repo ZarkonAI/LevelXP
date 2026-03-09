@@ -300,6 +300,51 @@ class Db:
         ]
         return normalized
 
+
+
+    def list_exercises_active_all(self, user_id: int, primary_muscle: Optional[str] = None) -> List[Dict[str, Any]]:
+        exercise_lang = self.get_exercise_lang(user_id=int(user_id))
+        favorite_ids = self.list_favorite_ids(user_id=int(user_id))
+        muscle_filter = (primary_muscle or "").strip().lower()
+
+        query_builder = (
+            self.client.table("exercises")
+            .select("id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at")
+            .eq("is_active", True)
+            .or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
+        )
+        if muscle_filter:
+            query_builder = query_builder.eq("primary_muscle", muscle_filter)
+
+        res = query_builder.order("is_featured", desc=True).order("name", desc=False).execute()
+        rows = res.data or []
+        return [
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "name_ru": row.get("name_ru"),
+                "image_url": row.get("image_url"),
+                "primary_muscle": row.get("primary_muscle"),
+                "muscle_map": row.get("muscle_map"),
+                "equipment": row.get("equipment"),
+                "is_featured": bool(row.get("is_featured")),
+                "is_favorite": int(row.get("id") or 0) in favorite_ids,
+                "display_name": self._exercise_display_name(row, lang=exercise_lang),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def list_exercises_page(exercises: List[Dict[str, Any]], *, page: int, page_size: int = 12) -> tuple[List[Dict[str, Any]], bool, int]:
+        safe_size = max(int(page_size or 12), 1)
+        total = len(exercises)
+        max_page = max(math.ceil(total / safe_size) - 1, 0) if total else 0
+        safe_page = min(max(int(page or 0), 0), max_page)
+        start = safe_page * safe_size
+        end = start + safe_size
+        items = exercises[start:end]
+        has_next = end < total
+        return items, has_next, safe_page
     def toggle_featured(self, exercise_id: int) -> bool:
         exercise_id_int = int(exercise_id)
         res = self.client.table("exercises").select("is_featured").eq("id", exercise_id_int).limit(1).execute()
