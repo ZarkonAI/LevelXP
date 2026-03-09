@@ -566,6 +566,16 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
             pass
 
     msg_photo = await _send_exercise_preview(callback.message, exercise, exercise_lang=exercise_lang)
+    is_admin = db.is_admin(user)
+    is_favorite = db.is_favorite(user_id=int(user["id"]), exercise_id=exercise_id)
+    msg_actions = await callback.message.answer(
+        texts.EXERCISE_CARD_HINT,
+        reply_markup=actions_inline_kb(
+            is_favorite=is_favorite,
+            is_admin=is_admin,
+            is_featured=bool(exercise.get("is_featured")),
+        ),
+    )
 
     await state.update_data(
         exercise_id=exercise_id,
@@ -579,10 +589,12 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
         last_category=data.get("selected_category"),
         page=data.get("exercises_page") or 0,
         search_query=data.get("search_query"),
+        wizard_message_id=msg_actions.message_id,
         last_photo_message_id=msg_photo.message_id,
-        wizard_chat_id=msg_photo.chat.id,
+        wizard_chat_id=msg_actions.chat.id,
+        wizard_step="exercise_card",
     )
-    await _show_selected_exercise_card(callback.message, state, db)
+    await state.set_state(QuickLogStates.choose_exercise_inline)
     await callback.answer()
 
 
