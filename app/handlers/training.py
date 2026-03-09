@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from app import db as db_module
 from app import texts
 from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, translate_exercise_actions_kb
-from app.keyboards_inline import category_inline_kb, exercise_card_inline_kb, exercises_inline_kb, mode_inline_kb, search_prompt_inline_kb, search_results_inline_kb, training_start_inline_kb
+from app.keyboards_inline import actions_inline_kb, category_inline_kb, exercises_inline_kb, mode_inline_kb, search_prompt_inline_kb, search_results_inline_kb, training_start_inline_kb
 from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -49,14 +49,30 @@ async def _show_selected_exercise_card(message: Message, state: FSMContext, db, 
     if show_status:
         info_text = status_text or (texts.FAVORITE_REMOVED if not is_favorite else texts.FAVORITE_ADDED)
         await message.answer(info_text)
+
+    updated = False
+    wizard_message_id = data.get("wizard_message_id")
+    wizard_chat_id = data.get("wizard_chat_id")
+    if wizard_message_id and wizard_chat_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=int(wizard_chat_id),
+                message_id=int(wizard_message_id),
+                text=texts.EXERCISE_CARD_HINT,
+                reply_markup=actions_inline_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured),
+            )
+            updated = True
+        except Exception:
+            updated = False
+    if not updated:
+        msg_actions = await message.answer(
+            texts.EXERCISE_CARD_HINT,
+            reply_markup=actions_inline_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured),
+        )
+        await state.update_data(wizard_message_id=msg_actions.message_id, wizard_chat_id=msg_actions.chat.id)
+
     await state.set_state(QuickLogStates.choose_exercise_inline)
     await state.update_data(wizard_step="exercise_card")
-    await _edit_wizard_text(
-        state,
-        message.bot,
-        texts.EXERCISE_CARD_HINT,
-        exercise_card_inline_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured),
-    )
 
 async def _render_last_category_exercises(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -132,7 +148,7 @@ def _format_technique_points(exercise: dict, exercise_lang: str) -> str:
     return "\n".join(f"• {point}" for point in shown)
 
 
-async def _send_exercise_preview(message: Message, exercise: dict, exercise_lang: str):
+async def _send_exercise_preview(message: Message, exercise: dict, exercise_lang: str) -> Message:
     display_name = str(exercise.get("display_name") or exercise.get("name") or "Упражнение")
     caption = texts.EXERCISE_PREVIEW_TEMPLATE.format(
         display_name=display_name,
@@ -143,12 +159,10 @@ async def _send_exercise_preview(message: Message, exercise: dict, exercise_lang
     image_url = str(exercise.get("image_url") or "").strip()
     if image_url:
         try:
-            await message.answer_photo(photo=image_url, caption=caption)
-            return
+            return await message.answer_photo(photo=image_url, caption=caption)
         except Exception:
-            await message.answer(f"{caption}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
-            return
-    await message.answer(caption)
+            return await message.answer(f"{caption}\n{texts.TECHNIQUE_LINK_PREFIX} {image_url}")
+    return await message.answer(caption)
 
 
 def _normalize_for_trigrams(value: str) -> str:
@@ -367,11 +381,26 @@ async def _edit_wizard_text(state: FSMContext, bot, text: str, reply_markup):
         await bot.edit_message_reply_markup(chat_id=chat_id, message_id=int(message_id), reply_markup=reply_markup)
 
 
+async def _cleanup_wizard_messages(state: FSMContext, bot):
+    data = await state.get_data()
+    chat_id = data.get("wizard_chat_id")
+    wizard_message_id = data.get("wizard_message_id")
+    last_photo_message_id = data.get("last_photo_message_id")
+    for message_id in [wizard_message_id, last_photo_message_id]:
+        if not chat_id or not message_id:
+            continue
+        try:
+            await bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+        except Exception:
+            pass
+
+
 def _exercise_page_title(page: int, has_next: bool) -> str:
     total_label = "?" if has_next else str(page + 1)
     return f"Выбери упражнение (стр. {page + 1}/{total_label})"
 
 async def _to_menu(message: Message, state: FSMContext):
+    await _cleanup_wizard_messages(state, message.bot)
     await state.clear()
     await message.answer(texts.MENU, reply_markup=main_menu_kb())
 async def _show_choose_exercise(message: Message, state: FSMContext):
@@ -427,12 +456,9 @@ async def quick_log_start(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "menu:back")
 async def wizard_back_to_menu(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
+    await _cleanup_wizard_messages(state, callback.bot)
     await state.clear()
-    if data.get("wizard_message_id"):
-        await state.update_data(wizard_message_id=data.get("wizard_message_id"), wizard_chat_id=data.get("wizard_chat_id"))
     if callback.message:
-        await _edit_wizard_text(state, callback.bot, texts.MENU, None)
         await callback.message.answer(texts.MENU, reply_markup=main_menu_kb())
     await callback.answer()
 
@@ -529,6 +555,18 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
     exercise_lang = db.get_exercise_lang(user_id=int(user["id"]))
     exercise = db.get_exercise(exercise_id=exercise_id, user_id=int(user["id"]))
     display_name = str(exercise.get("display_name") or exercise.get("name") or "Упражнение")
+    data = await state.get_data()
+
+    wizard_message_id = data.get("wizard_message_id")
+    wizard_chat_id = data.get("wizard_chat_id")
+    if wizard_message_id and wizard_chat_id:
+        try:
+            await callback.bot.edit_message_reply_markup(chat_id=int(wizard_chat_id), message_id=int(wizard_message_id), reply_markup=None)
+        except Exception:
+            pass
+
+    msg_photo = await _send_exercise_preview(callback.message, exercise, exercise_lang=exercise_lang)
+
     await state.update_data(
         exercise_id=exercise_id,
         exercise_name=display_name,
@@ -537,8 +575,13 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
         selected_exercise_id=exercise_id,
         selected_exercise_name_en=exercise.get("name") or display_name,
         exercise_is_featured=bool(exercise.get("is_featured")),
+        last_exercise_id=exercise_id,
+        last_category=data.get("selected_category"),
+        page=data.get("exercises_page") or 0,
+        search_query=data.get("search_query"),
+        last_photo_message_id=msg_photo.message_id,
+        wizard_chat_id=msg_photo.chat.id,
     )
-    await _send_exercise_preview(callback.message, exercise, exercise_lang=exercise_lang)
     await _show_selected_exercise_card(callback.message, state, db)
     await callback.answer()
 
@@ -546,7 +589,15 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
 @router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "card:back")
 async def exercise_card_back_inline(callback: CallbackQuery, state: FSMContext, db):
     user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
-    page = int((await state.get_data()).get("exercises_page") or 0)
+    data = await state.get_data()
+    page = int(data.get("page") or data.get("exercises_page") or 0)
+    photo_message_id = data.get("last_photo_message_id")
+    wizard_chat_id = data.get("wizard_chat_id")
+    if photo_message_id and wizard_chat_id:
+        try:
+            await callback.bot.delete_message(chat_id=int(wizard_chat_id), message_id=int(photo_message_id))
+        except Exception:
+            pass
     await _show_exercise_list_wizard(state, callback.bot, db, int(user["id"]), page=page)
     await callback.answer()
 

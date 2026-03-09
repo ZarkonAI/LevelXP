@@ -118,3 +118,7 @@ def exercise_card_inline_kb(*, is_favorite: bool, is_admin: bool = False, is_fea
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def actions_inline_kb(*, is_favorite: bool, is_admin: bool = False, is_featured: bool = False) -> InlineKeyboardMarkup:
+    return exercise_card_inline_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured)
