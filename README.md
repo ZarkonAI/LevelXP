@@ -36,7 +36,7 @@ python -m app.main
 ## Health-check команды
 
 - `/ping` → `ok`
-- `/version` → `LevelXP v1.0`
+- `/version` → `FitXP v1.0`
 
 ## Частые ошибки
 

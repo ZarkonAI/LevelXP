@@ -9,9 +9,12 @@ ACHIEVEMENTS_TITLE = "<b>🏆 Достижения</b>"
 
 TRAINING_CHOOSE = "Как записываем тренировку?"
 CHOOSE_MODE = "Выбери режим:"
-CHOOSE_EXERCISE = "Выбери упражнение:"
-SEARCH_PROMPT = "Введи часть названия упражнения"
-SEARCH_EMPTY = "Ничего не найдено. Попробуй другой запрос или вернись назад."
+CHOOSE_CATEGORY = "Выбери мышечную группу или действие:"
+CHOOSE_EXERCISE = "Выбери упражнение"
+SEARCH_PROMPT = "Введи запрос"
+SEARCH_EMPTY = "Ничего не найдено."
+SEARCH_RESULTS_TITLE = "Результаты (стр. {page}/{total}). Выбери упражнение:"
+USE_INLINE_BACK_HINT = "Используй кнопки ⬅️ Назад под сообщением."
 ENTER_CUSTOM_NAME = "Напиши название упражнения одним сообщением."
 CHOOSE_PRIMARY_MUSCLE = "Выбери основную мышечную группу:"
 WEIGHT_HINT_BODYWEIGHT = "Вес — это вес снаряда/доп. отягощения. Для подтягиваний без веса введи 0."
@@ -50,13 +53,17 @@ ASK_TEMPLATE_NAME = "Как назовём шаблон? (например: Гр
 TEMPLATE_SAVED = "Шаблон сохранён."
 TEMPLATE_REPEAT_CONFIRM = "Применить шаблон сегодня?"
 TEMPLATE_REPEATED = "Шаблон применён. Тренировка создана на сегодня."
+HISTORY_TEMPLATE_MODE = "Куда сохранить тренировку из истории?"
+TEMPLATE_PICK_EXISTING = "Выбери шаблон, в который добавить тренировку:"
+TEMPLATE_APPENDED = "Добавил в шаблон."
+TECHNIQUE_LINK_PREFIX = "🖼 Техника:"
 
 TECH_ERROR = "Похоже, произошла техническая ошибка. Попробуй ещё раз или нажми ↩️ В меню."
 CANCELLED = "Ок, отменил. Возвращаюсь в меню."
 ACHIEVEMENT_UNLOCKED = "🏆 Достижение открыто: {name}"
 PING = "ok"
 
-VERSION = "LevelXP v1.0"
+VERSION = "FitXP v1.0"
 
 ACHIEVEMENTS_EMPTY = "Пока достижений нет. Запиши тренировку, чтобы открыть первое."
 
@@ -64,3 +71,46 @@ SETTINGS_TEXT = "<b>⚙️ Настройки</b>\nЕдиницы: <b>{units}</b
 SETTINGS_UNITS_PROMPT = "Выбери единицы измерения:"
 SETTINGS_TIMEZONE_PROMPT = "Введи часовой пояс в формате UTC+2 или UTC-5."
 SETTINGS_TIMEZONE_INVALID = "Неверный формат. Используй UTC+2 или UTC-5."
+SETTINGS_EXERCISE_LANG_PROMPT = "Выбери язык упражнений:"
+SETTINGS_TRANSLATE_MODE_PROMPT = "Режим ручного перевода названий упражнений:"
+TECHNIQUE_CAPTION = "{display_name}\n🖼 техника"
+CHOOSE_EXERCISE_FROM_LIST = "Выбери пункт из списка"
+RU_NAME_PROMPT = "Введи русское название для упражнения или '-' чтобы пропустить."
+
+UNAVAILABLE = "Недоступно"
+TRANSLATE_IMAGE_MISSING = "⚠️ Не удалось показать изображение. Если есть ссылка на технику — проверь image_url в БД."
+
+TRANSLATE_CARD_TEMPLATE = "<b>EN:</b> {name_en}\n<b>Мышцы:</b> {muscles}\n<b>Оборудование:</b> {equipment}"
+TRANSLATE_SKIPPED = "Пропустил."
+TRANSLATE_SAVED = "✅ Сохранил: {name_en} → {name_ru}"
+TRANSLATE_KEEP_EN = "✅ Оставил EN: {name_en}"
+TRANSLATE_ALL_DONE = "Все переведено в этой категории ✅"
+TRANSLATE_CHOOSE_ACTION = "Выбери действие для перевода:"
+
+EXERCISE_PREVIEW_TEMPLATE = (
+    "<b>{display_name}</b>\n"
+    "<b>Мышцы:</b> {muscles}\n"
+    "<b>Оборудование:</b> {equipment}\n"
+    "<b>Техника:</b>\n{technique}"
+)
+
+EXERCISE_CARD_HINT = "Выбери действие: добавь в избранное или продолжи запись."
+FAVORITE_ADDED = "⭐ Добавил в избранное"
+FAVORITE_REMOVED = "⭐ Убрал из избранного"
+FEATURED_ENABLED = "🔥 Рекомендуемое включено"
+FEATURED_DISABLED = "🔥 Рекомендуемое выключено"
+
+
+HELP_TEXT = (
+    "<b>❓ Помощь</b>\n\n"
+    "FitXP — бот для записи тренировок и прокачки персонажа через XP.\n\n"
+    "• Как записывать: открой <b>🏋️ Тренировка</b> и следуй шагам.\n"
+    "• Как учитывать вес: укажи вес снаряда/доп. отягощения, если без веса — введи 0.\n"
+    "• Как предложить упражнение: нажми кнопку ниже <b>➕ Предложить упражнение</b>."
+)
+SUPPORT_WRITE_PROMPT = "Напиши сообщение в поддержку одним текстом."
+SUPPORT_EXERCISE_PROMPT = "Название (как можешь), мышцы, оборудование, ссылка/описание"
+SUPPORT_EMPTY_TEXT = "Сообщение пустое. Отправь текст одним сообщением."
+SUPPORT_TEXT_ONLY = "Нужен текст одним сообщением."
+SUPPORT_SENT = "✅ Сообщение отправлено в поддержку. Мы ответим здесь."
+SUPPORT_EXERCISE_SENT = "✅ Заявка на упражнение отправлена. Мы рассмотрим и добавим при необходимости."

@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
 
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
 def _build_rows(buttons: list[str], row_width: int = 2) -> list[list[KeyboardButton]]:
@@ -38,6 +38,19 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
         input_field_placeholder="Выбери действие…",
     )
 
+
+
+
+def help_inline_kb(support_username: str) -> InlineKeyboardMarkup:
+    support_link = f"https://t.me/{support_username.lstrip('@')}" if support_username else "https://t.me"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Связаться с поддержкой", url=support_link)],
+            [InlineKeyboardButton(text="✍️ Написать в поддержку", callback_data="support:write")],
+            [InlineKeyboardButton(text="➕ Предложить упражнение", callback_data="support:exercise")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="help:back")],
+        ]
+    )
 
 def back_to_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -103,15 +116,53 @@ def confirm_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def exercises_kb(exercises: list[dict]) -> ReplyKeyboardMarkup:
-    names = [str(exercise.get("name", "")) for exercise in exercises if exercise.get("name")]
+
+
+def exercise_category_kb(*, translate_mode: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="🦵 Ноги"), KeyboardButton(text="🧱 Спина")],
+        [KeyboardButton(text="🫀 Грудь"), KeyboardButton(text="🧍 Плечи")],
+        [KeyboardButton(text="💪 Руки"), KeyboardButton(text="🎯 Кор")],
+    ]
+    if translate_mode:
+        keyboard.append([KeyboardButton(text="⏭ Следующее непереведённое")])
+    keyboard.extend(
+        [
+            [KeyboardButton(text="➕ Своё упражнение")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")],
+        ]
+    )
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def exercises_kb(exercises: list[dict], *, translate_mode: bool = False) -> ReplyKeyboardMarkup:
+    names = [f"{idx}) {str(exercise.get('display_name') or '')}" for idx, exercise in enumerate(exercises, start=1) if exercise.get("display_name")]
     keyboard = _build_rows(names, row_width=2)
+    if translate_mode:
+        keyboard.append([KeyboardButton(text="⏭ Следующее непереведённое")])
     keyboard.append([KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="➕ Своё упражнение")])
     keyboard.append([KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")])
 
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
+
+
+def exercise_card_kb(*, is_favorite: bool, is_admin: bool = False, is_featured: bool = False) -> ReplyKeyboardMarkup:
+    favorite_text = "⭐ Убрать из избранного" if is_favorite else "⭐ В избранное"
+    keyboard = [[KeyboardButton(text=favorite_text)]]
+    if is_admin:
+        featured_text = "🔥 Рекомендуемое: Выкл" if is_featured else "🔥 Рекомендуемое: Вкл"
+        keyboard.append([KeyboardButton(text=featured_text)])
+    keyboard.extend(
+        [
+            [KeyboardButton(text="✅ Продолжить")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="❌ Отмена")],
+        ]
+    )
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+    )
 def history_list_kb(workouts: list[dict]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for idx, workout in enumerate(workouts[:10], start=1):
@@ -129,7 +180,7 @@ def history_action_kb(status: str | None) -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🔁 Повторить")],
             [KeyboardButton(text="✏️ Исправить")],
             [KeyboardButton(text=status_button)],
-            [KeyboardButton(text="💾 Сохранить как шаблон")],
+            [KeyboardButton(text="💾 В шаблон")],
             [KeyboardButton(text="↩️ Назад")],
             [KeyboardButton(text="↩️ В меню")],
         ],
@@ -182,6 +233,35 @@ def back_menu_kb() -> ReplyKeyboardMarkup:
     )
 
 
+def continue_back_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Продолжить")],
+            [KeyboardButton(text="↩️ Назад")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def history_template_options_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ В существующий")],
+            [KeyboardButton(text="🆕 Новый")],
+            [KeyboardButton(text="↩️ Назад")],
+            [KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def indexed_list_kb(items: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=f"{idx}) {label}")] for idx, label in enumerate(items, start=1)]
+    rows.append([KeyboardButton(text="↩️ Назад")])
+    rows.append([KeyboardButton(text="↩️ В меню")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def repeat_options_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -194,13 +274,18 @@ def repeat_options_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def settings_kb() -> ReplyKeyboardMarkup:
+def settings_kb(*, is_admin: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="⚖️ Единицы")],
+        [KeyboardButton(text="🕒 Часовой пояс")],
+        [KeyboardButton(text="🌐 Язык упражнений")],
+    ]
+    if is_admin:
+        keyboard.append([KeyboardButton(text="✍️ Режим перевода")])
+    keyboard.append([KeyboardButton(text="↩️ В меню")])
+
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="⚖️ Единицы")],
-            [KeyboardButton(text="🕒 Часовой пояс")],
-            [KeyboardButton(text="↩️ В меню")],
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 
@@ -209,6 +294,38 @@ def units_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="kg"), KeyboardButton(text="lb")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def exercise_lang_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Русский (если есть)")],
+            [KeyboardButton(text="English")],
+            [KeyboardButton(text="↩️ Назад")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def translate_mode_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Вкл"), KeyboardButton(text="Выкл")],
+            [KeyboardButton(text="↩️ Назад")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def translate_exercise_actions_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Ввести RU"), KeyboardButton(text="🆗 Оставить EN")],
+            [KeyboardButton(text="⏭ Следующее непереведённое")],
             [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
         ],
         resize_keyboard=True,

@@ -26,13 +26,20 @@ async def main():
 
     # простой dependency injection через data
     dp["db"] = db
+    dp["admin_ids"] = settings.admin_ids
+    dp["support_username"] = settings.support_username
 
     for r in all_routers:
         dp.include_router(r)
 
     log.info("Bot started")
     log.info("Start polling")
-    await dp.start_polling(bot, db=db)
+    await dp.start_polling(
+        bot,
+        db=db,
+        admin_ids=settings.admin_ids,
+        support_username=settings.support_username,
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -4,9 +4,11 @@ import logging
 import math
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from supabase import Client, create_client
+
+from app.config import is_admin as is_admin_from_env
 
 log = logging.getLogger("db")
 
@@ -98,6 +100,14 @@ class Db:
         self.client: Client = create_client(url, service_key)
         self._ex_cache: Dict[str, Any] = {"data": None, "expires_at": None}
 
+    @staticmethod
+    def _exercise_display_name(row: Dict[str, Any], lang: str = "ru") -> str:
+        name_ru = str(row.get("name_ru") or "").strip()
+        name_en = str(row.get("name") or "").strip()
+        if lang == "ru" and name_ru:
+            return name_ru
+        return name_en or name_ru or "Упражнение"
+
     def seed_exercises_if_empty(self) -> None:
         """Idempotent seed: если упражнений нет — добавим базовые."""
         try:
@@ -116,7 +126,7 @@ class Db:
 
         res = (
             self.client.table("users")
-            .select("id,telegram_id,username,units,timezone")
+            .select("id,telegram_id,username,units,timezone,exercise_lang,translate_mode,role")
             .eq("telegram_id", telegram_id)
             .limit(1)
             .execute()
@@ -124,6 +134,19 @@ class Db:
         if not res.data:
             raise RuntimeError("User upsert/select failed")
         return res.data[0]
+
+    @staticmethod
+    def is_admin(user: Dict[str, Any]) -> bool:
+        role_admin = str((user or {}).get("role") or "user").lower() == "admin"
+        telegram_id = (user or {}).get("telegram_id")
+        env_admin = bool(telegram_id is not None and is_admin_from_env(int(telegram_id)))
+        return role_admin or env_admin
+
+    def is_admin_by_id(self, user_id: int) -> bool:
+        res = self.client.table("users").select("role").eq("id", user_id).limit(1).execute()
+        if not res.data:
+            return False
+        return str(res.data[0].get("role") or "user").lower() == "admin"
 
     def ensure_progress(self, user_id: int) -> None:
         res = self.client.table("progress").select("user_id").eq("user_id", user_id).limit(1).execute()
@@ -182,17 +205,20 @@ class Db:
             raise last_exc
         raise RuntimeError("Progress not found")
 
-    def get_exercise(self, exercise_id: int) -> Dict[str, Any]:
+    def get_exercise(self, exercise_id: int, *, user_id: Optional[int] = None) -> Dict[str, Any]:
         res = (
             self.client.table("exercises")
-            .select("id,name,primary_muscle,muscle_map")
+            .select("id,name,name_ru,image_url,instructions,instructions_ru,equipment,primary_muscle,muscle_map,is_featured")
             .eq("id", exercise_id)
             .limit(1)
             .execute()
         )
         if not res.data:
             raise RuntimeError("Exercise not found")
-        return res.data[0]
+        row = res.data[0]
+        lang = self.get_exercise_lang(user_id=int(user_id)) if user_id is not None else "ru"
+        row["display_name"] = self._exercise_display_name(row, lang=lang)
+        return row
 
     def _validate_exercise_name(self, name: str) -> Optional[str]:
         clean = (name or "").strip()
@@ -208,32 +234,215 @@ class Db:
             return "symbols"
         return None
 
-    def list_exercises(self, user_id: int, limit: int = 12, query: Optional[str] = None) -> List[Dict[str, Any]]:
-        query_builder = self.client.table("exercises").select("id,name,primary_muscle,muscle_map,owner_user_id,created_at")
-        query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
+    def list_exercises(
+        self,
+        user_id: int,
+        limit: int = 12,
+        offset: int = 0,
+        primary_muscle: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(int(limit or 12), 1)
+        safe_offset = max(int(offset or 0), 0)
+        exercise_lang = self.get_exercise_lang(user_id=int(user_id))
+        favorite_ids = self.list_favorite_ids(user_id=int(user_id))
 
+        def _build_query(include_uses_count: bool = True):
+            select_fields = "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at"
+            if include_uses_count:
+                select_fields = f"{select_fields},uses_count"
+
+            query_builder = self.client.table("exercises").select(select_fields)
+            query_builder = query_builder.eq("is_active", True)
+            query_builder = query_builder.or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
+
+            if muscle_filter:
+                query_builder = query_builder.eq("primary_muscle", muscle_filter)
+
+            if search_query:
+                query_builder = query_builder.or_(f"name.ilike.%{search_query}%,name_ru.ilike.%{search_query}%")
+
+            query_builder = query_builder.order("is_featured", desc=True)
+            query_builder = query_builder.order("name", desc=False)
+            return query_builder
+
+        def _is_uses_count_missing(exc: Exception) -> bool:
+            message = str(exc).lower()
+            return "column" in message and "uses_count" in message
+
+        muscle_filter = (primary_muscle or "").strip().lower()
         search_query = (query or "").strip()
-        if search_query:
-            query_builder = query_builder.ilike("name", f"%{search_query}%")
-
-        res = query_builder.order("created_at", desc=True).limit(max(limit * 4, limit)).execute()
+        query_builder = _build_query(include_uses_count=True)
+        try:
+            res = query_builder.range(safe_offset, safe_offset + safe_limit - 1).execute()
+        except Exception as exc:
+            if not _is_uses_count_missing(exc):
+                raise
+            query_builder = _build_query(include_uses_count=False)
+            res = query_builder.range(safe_offset, safe_offset + safe_limit - 1).execute()
         rows = res.data or []
-        globals_rows = [row for row in rows if row.get("owner_user_id") is None]
-        custom_rows = [row for row in rows if row.get("owner_user_id") is not None]
-        globals_rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
-        custom_rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
-        rows = globals_rows + custom_rows
 
         normalized = [
             {
                 "id": row.get("id"),
                 "name": row.get("name"),
+                "name_ru": row.get("name_ru"),
+                "image_url": row.get("image_url"),
                 "primary_muscle": row.get("primary_muscle"),
                 "muscle_map": row.get("muscle_map"),
+                "equipment": row.get("equipment"),
+                "uses_count": int(row.get("uses_count") or 0),
+                "is_featured": bool(row.get("is_featured")),
+                "is_favorite": int(row.get("id") or 0) in favorite_ids,
+                "display_name": self._exercise_display_name(row, lang=exercise_lang),
             }
             for row in rows
         ]
-        return normalized[:limit]
+        return normalized
+
+
+
+    def list_exercises_active_all(self, user_id: int, primary_muscle: Optional[str] = None) -> List[Dict[str, Any]]:
+        exercise_lang = self.get_exercise_lang(user_id=int(user_id))
+        favorite_ids = self.list_favorite_ids(user_id=int(user_id))
+        muscle_filter = (primary_muscle or "").strip().lower()
+
+        query_builder = (
+            self.client.table("exercises")
+            .select("id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at")
+            .eq("is_active", True)
+            .or_(f"owner_user_id.is.null,owner_user_id.eq.{int(user_id)}")
+        )
+        if muscle_filter:
+            query_builder = query_builder.eq("primary_muscle", muscle_filter)
+
+        res = query_builder.order("is_featured", desc=True).order("name", desc=False).execute()
+        rows = res.data or []
+        return [
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "name_ru": row.get("name_ru"),
+                "image_url": row.get("image_url"),
+                "primary_muscle": row.get("primary_muscle"),
+                "muscle_map": row.get("muscle_map"),
+                "equipment": row.get("equipment"),
+                "is_featured": bool(row.get("is_featured")),
+                "is_favorite": int(row.get("id") or 0) in favorite_ids,
+                "display_name": self._exercise_display_name(row, lang=exercise_lang),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def list_exercises_page(exercises: List[Dict[str, Any]], *, page: int, page_size: int = 12) -> tuple[List[Dict[str, Any]], bool, int]:
+        safe_size = max(int(page_size or 12), 1)
+        total = len(exercises)
+        max_page = max(math.ceil(total / safe_size) - 1, 0) if total else 0
+        safe_page = min(max(int(page or 0), 0), max_page)
+        start = safe_page * safe_size
+        end = start + safe_size
+        items = exercises[start:end]
+        has_next = end < total
+        return items, has_next, safe_page
+
+    @staticmethod
+    def normalize_search_text(value: str) -> str:
+        normalized = str(value or "").lower().replace("ё", "е")
+        normalized = re.sub(r"[^0-9a-zа-я\-\s]", " ", normalized, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def search_tokens(value: str) -> list[str]:
+        normalized = Db.normalize_search_text(value)
+        return [token for token in normalized.split(" ") if token]
+
+    @staticmethod
+    def token_match(*, query_tokens: list[str], name: str, name_ru: str) -> bool:
+        if not query_tokens:
+            return False
+        hay_name = Db.normalize_search_text(name)
+        hay_name_ru = Db.normalize_search_text(name_ru)
+        return any(token in hay_name or token in hay_name_ru for token in query_tokens)
+
+    def toggle_featured(self, exercise_id: int) -> bool:
+        exercise_id_int = int(exercise_id)
+        res = self.client.table("exercises").select("is_featured").eq("id", exercise_id_int).limit(1).execute()
+        if not res.data:
+            raise RuntimeError("Exercise not found")
+        current_value = bool(res.data[0].get("is_featured"))
+        new_value = not current_value
+        self.client.table("exercises").update({"is_featured": new_value}).eq("id", exercise_id_int).execute()
+        return new_value
+
+    def is_favorite(self, user_id: int, exercise_id: int) -> bool:
+        res = (
+            self.client.table("user_favorite_exercises")
+            .select("user_id")
+            .eq("user_id", int(user_id))
+            .eq("exercise_id", int(exercise_id))
+            .limit(1)
+            .execute()
+        )
+        return bool(res.data)
+
+    def add_favorite(self, user_id: int, exercise_id: int) -> None:
+        payload = {"user_id": int(user_id), "exercise_id": int(exercise_id)}
+        self.client.table("user_favorite_exercises").upsert(payload, on_conflict="user_id,exercise_id").execute()
+
+    def remove_favorite(self, user_id: int, exercise_id: int) -> None:
+        (
+            self.client.table("user_favorite_exercises")
+            .delete()
+            .eq("user_id", int(user_id))
+            .eq("exercise_id", int(exercise_id))
+            .execute()
+        )
+
+    def list_favorite_ids(self, user_id: int) -> Set[int]:
+        res = self.client.table("user_favorite_exercises").select("exercise_id").eq("user_id", int(user_id)).execute()
+        return {int(row.get("exercise_id")) for row in (res.data or []) if row.get("exercise_id") is not None}
+
+    def get_exercise_lang(self, user_id: int) -> str:
+        res = self.client.table("users").select("exercise_lang").eq("id", user_id).limit(1).execute()
+        if not res.data:
+            return "en"
+        value = str(res.data[0].get("exercise_lang") or "en").lower()
+        return "ru" if value == "ru" else "en"
+
+    def set_exercise_lang(self, user_id: int, lang: str) -> None:
+        value = "ru" if str(lang).lower() == "ru" else "en"
+        self.client.table("users").update({"exercise_lang": value}).eq("id", user_id).execute()
+
+    def get_translate_mode(self, user_id: int) -> bool:
+        res = self.client.table("users").select("translate_mode").eq("id", user_id).limit(1).execute()
+        if not res.data:
+            return False
+        return bool(res.data[0].get("translate_mode"))
+
+    def set_translate_mode(self, user_id: int, enabled: bool) -> None:
+        self.client.table("users").update({"translate_mode": bool(enabled)}).eq("id", user_id).execute()
+
+    def update_exercise_name_ru(self, exercise_id: int, name_ru: str) -> None:
+        self.client.table("exercises").update({"name_ru": (name_ru or "").strip()}).eq("id", exercise_id).execute()
+
+    def get_next_untranslated_exercise(self, primary_muscle: str) -> Optional[Dict[str, Any]]:
+        category = str(primary_muscle or "").strip().lower()
+        if not category:
+            return None
+        res = (
+            self.client.table("exercises")
+            .select("id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,created_at")
+            .is_("owner_user_id", "null")
+            .eq("primary_muscle", category)
+            .or_("name_ru.is.null,name_ru.eq.")
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        return res.data[0]
 
     def create_custom_exercise(self, user_id: int, name: str, primary_muscle: str) -> Dict[str, Any]:
         reason = self._validate_exercise_name(name)
@@ -251,12 +460,13 @@ class Db:
         res = self.client.table("exercises").insert(payload).execute()
         self._ex_cache = {"data": None, "expires_at": None}
         if res.data and res.data[0].get("id") is not None:
-            return {"id": res.data[0]["id"], "name": res.data[0].get("name", clean_name)}
+            row = res.data[0]
+            return {"id": row["id"], "name": row.get("name", clean_name), "display_name": self._exercise_display_name(row)}
 
         fallback = (
             self.client.table("exercises")
-            .select("id,name")
-             .eq("name", clean_name)
+            .select("id,name,name_ru")
+            .eq("name", clean_name)
             .eq("primary_muscle", primary_muscle)
             .eq("owner_user_id", user_id)
             .order("created_at", desc=True)
@@ -265,7 +475,9 @@ class Db:
         )
         if not fallback.data:
             raise RuntimeError("create_custom_exercise failed")
-        return fallback.data[0]
+        row = fallback.data[0]
+        row["display_name"] = self._exercise_display_name(row)
+        return row
 
     def create_workout(
         self,
@@ -353,7 +565,7 @@ class Db:
     def list_workouts(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         res = (
             self.client.table("workouts")
-            .select("id,workout_date,title,mode,status")
+            .select("id,workout_date,title,mode,status,total_xp,muscle_delta")
             .eq("user_id", user_id)
             .order("workout_date", desc=True)
             .order("id", desc=True)
@@ -388,9 +600,9 @@ class Db:
         exercise_id = int(item.get("exercise_id") or 0)
         exercise_name = "Упражнение"
         if exercise_id:
-            ex_res = self.client.table("exercises").select("id,name").eq("id", exercise_id).limit(1).execute()
+            ex_res = self.client.table("exercises").select("id,name,name_ru").eq("id", exercise_id).limit(1).execute()
             if ex_res.data:
-                exercise_name = str(ex_res.data[0].get("name") or exercise_name)
+                exercise_name = self._exercise_display_name(ex_res.data[0])
 
         set_row: Dict[str, Any] = {}
         if item.get("id"):
@@ -410,9 +622,12 @@ class Db:
             "title": header.get("title"),
             "mode": header.get("mode"),
             "status": header.get("status"),
+            "total_xp": int(header.get("total_xp") or 0),
+            "muscle_delta": header.get("muscle_delta") if isinstance(header.get("muscle_delta"), dict) else {},
             "workout_item_id": int(item.get("id") or 0),
             "exercise_id": exercise_id,
             "exercise_name": exercise_name,
+            "display_name": exercise_name,
             "weight": float(set_row.get("weight") or 0),
             "reps": int(set_row.get("reps") or 0),
             "sets_count": int(set_row.get("sets_count") or 0),
@@ -612,7 +827,7 @@ class Db:
         set_row = set_res.data[0] or {}
 
         exercise = self.get_exercise(int(item.get("exercise_id") or 0))
-        exercise_name = str(exercise.get("name") or "Тренировка")
+        exercise_name = str(exercise.get("display_name") or "Тренировка")
 
         status = str(workout.get("status") or "planned")
         old_total_xp = self._to_int(workout.get("total_xp"), 0)
@@ -641,25 +856,12 @@ class Db:
         weight_val = self._to_float(new_weight, 0.0)
         reps_val = self._to_int(new_reps, 0)
         sets_val = self._to_int(new_sets_count, 0)
-        volume = max(0.0, weight_val * reps_val * sets_val)
-        load_points = math.sqrt(volume)
-        new_total_xp = max(5, round(load_points * 0.8))
-
-        muscle_map = exercise.get("muscle_map")
-        primary_muscle = exercise.get("primary_muscle")
-        if not isinstance(muscle_map, dict) or not muscle_map:
-            muscle_map = {primary_muscle: 1.0} if primary_muscle else {}
-
-        new_muscle_delta: Dict[str, int] = {}
-        for muscle, coeff in muscle_map.items():
-            if muscle is None:
-                continue
-            gain = round(load_points * float(coeff))
-            if gain <= 0:
-                continue
-            new_muscle_delta[str(muscle)] = int(gain)
-
-        new_total_sets = sets_val
+        new_total_xp, new_muscle_delta, new_total_sets = self.compute_delta(
+            exercise_id=int(item.get("exercise_id") or 0),
+            weight=weight_val,
+            reps=reps_val,
+            sets_count=sets_val,
+        )
 
         self.client.table("sets").update(
             {
@@ -780,11 +982,11 @@ class Db:
         if exercise_ids:
             ex_res = (
                 self.client.table("exercises")
-                .select("id,name")
+                .select("id,name,name_ru")
                 .in_("id", exercise_ids)
                 .execute()
             )
-            exercise_names = {int(row["id"]): str(row.get("name") or "Упражнение") for row in (ex_res.data or [])}
+            exercise_names = {int(row["id"]): self._exercise_display_name(row) for row in (ex_res.data or [])}
 
         result_items: List[Dict[str, Any]] = []
         for item in items:
@@ -803,6 +1005,7 @@ class Db:
                     {
                         "exercise_id": item.get("exercise_id"),
                         "exercise_name": exercise_name,
+            "display_name": exercise_name,
                         "weight": 0,
                         "reps": 0,
                         "sets_count": 0,
@@ -817,6 +1020,7 @@ class Db:
                     {
                         "exercise_id": item.get("exercise_id"),
                         "exercise_name": exercise_name,
+            "display_name": exercise_name,
                         "weight": set_row.get("weight") or 0,
                         "reps": set_row.get("reps") or 0,
                         "sets_count": set_row.get("sets_count") or 0,
@@ -899,6 +1103,96 @@ class Db:
         if not res.data:
             return None
         return res.data[0]
+
+    @staticmethod
+    def format_delta(total_xp: int, muscle_delta: Dict[str, int]) -> str:
+        xp = int(total_xp or 0)
+        lines = [f"XP: {xp:+d}"]
+        if isinstance(muscle_delta, dict) and muscle_delta:
+            top = sorted(
+                ((str(m), int(v or 0)) for m, v in muscle_delta.items() if int(v or 0) != 0),
+                key=lambda x: abs(x[1]),
+                reverse=True,
+            )[:3]
+            if top:
+                lines.append("Изменения по мышцам:")
+                lines.extend([f"- {m}: {v:+d}" for m, v in top])
+        return "\n".join(lines)
+
+    def get_workout_payload_item(self, user_id: int, workout_id: int) -> Dict[str, Any]:
+        card = self.get_workout_card(user_id=user_id, workout_id=workout_id)
+        if not card:
+            raise RuntimeError("Workout not found")
+        return {
+            "exercise_id": int(card.get("exercise_id") or 0),
+            "weight": float(card.get("weight") or 0),
+            "reps": int(card.get("reps") or 0),
+            "sets_count": int(card.get("sets_count") or 0),
+            "rest_seconds": int(card.get("rest_seconds") or 0),
+            "rest_pattern": card.get("rest_pattern") if isinstance(card.get("rest_pattern"), list) else None,
+        }
+
+    def append_to_template(self, user_id: int, template_id: int, item: Dict[str, Any]) -> bool:
+        template = self.get_template(user_id=user_id, template_id=template_id)
+        if not template:
+            return False
+        payload = template.get("payload") if isinstance(template.get("payload"), list) else []
+        payload.append(
+            {
+                "exercise_id": int(item.get("exercise_id") or 0),
+                "weight": float(item.get("weight") or 0),
+                "reps": int(item.get("reps") or 0),
+                "sets_count": int(item.get("sets_count") or 0),
+                "rest_seconds": int(item.get("rest_seconds") or 0),
+                "rest_pattern": item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else None,
+            }
+        )
+        self.client.table("templates").update({"payload": payload}).eq("id", template_id).eq("user_id", user_id).execute()
+        return True
+
+    def compute_delta(self, exercise_id: int, weight: float, reps: int, sets_count: int) -> tuple[int, Dict[str, int], int]:
+        exercise = self.get_exercise(exercise_id)
+        weight_val = self._to_float(weight, 0.0)
+        reps_val = self._to_int(reps, 0)
+        sets_val = self._to_int(sets_count, 0)
+        volume = weight_val * reps_val * sets_val
+        load_points = math.sqrt(max(0.0, volume))
+        total_xp = max(5, round(load_points * 0.8))
+
+        muscle_map = exercise.get("muscle_map") or {}
+        primary_muscle = exercise.get("primary_muscle")
+        if not isinstance(muscle_map, dict) or not muscle_map:
+            muscle_map = {primary_muscle: 1.0} if primary_muscle else {}
+
+        muscle_delta: Dict[str, int] = {}
+        for muscle, coeff in muscle_map.items():
+            if muscle is None:
+                continue
+            gain = round(load_points * float(coeff))
+            if gain <= 0:
+                continue
+            muscle_delta[str(muscle)] = int(muscle_delta.get(str(muscle), 0)) + int(gain)
+        return int(total_xp), muscle_delta, int(sets_val)
+
+    def compute_delta_from_payload(self, payload_items: List[Dict[str, Any]]) -> tuple[int, Dict[str, int], int]:
+        total_xp = 0
+        total_sets = 0
+        muscle_delta: Dict[str, int] = {}
+        for item in payload_items:
+            ex_id = item.get("exercise_id")
+            if ex_id is None:
+                continue
+            xp_item, muscle_item, sets_item = self.compute_delta(
+                exercise_id=int(ex_id),
+                weight=float(item.get("weight") or 0),
+                reps=int(item.get("reps") or 0),
+                sets_count=int(item.get("sets_count") or 0),
+            )
+            total_xp += int(xp_item)
+            total_sets += int(sets_item)
+            for muscle, gain in muscle_item.items():
+                muscle_delta[muscle] = int(muscle_delta.get(muscle, 0)) + int(gain)
+        return int(total_xp), muscle_delta, int(total_sets)
 
     def create_workout_from_template(self, user_id: int, template_row: Dict[str, Any], title: Optional[str] = None) -> int:
         workout_title = title or str(template_row.get("name") or "Template")
@@ -1047,35 +1341,19 @@ class Db:
             raise RuntimeError("Progress not found for awarding")
         progress = progress_res.data[0]
 
-        exercise = self.get_exercise(exercise_id)
-
-        weight_val = self._to_float(weight, 0.0)
-        reps_val = self._to_int(reps, 0)
-        sets_val = self._to_int(sets_count, 0)
-        volume = weight_val * reps_val * sets_val
-        load_points = math.sqrt(max(0.0, volume))
-        xp_gain = max(5, round(load_points * 0.8))
-
-        muscle_map = exercise.get("muscle_map") or {}
-        primary_muscle = exercise.get("primary_muscle")
-        if not isinstance(muscle_map, dict) or not muscle_map:
-            muscle_map = {primary_muscle: 1.0} if primary_muscle else {}
+        xp_gain, muscle_delta, sets_val = self.compute_delta(
+            exercise_id=exercise_id,
+            weight=weight,
+            reps=reps,
+            sets_count=sets_count,
+        )
 
         muscles = progress.get("muscles") or {}
         if not isinstance(muscles, dict):
             muscles = {}
 
-        muscle_gains: List[tuple[str, int]] = []
-        muscle_delta: Dict[str, int] = {}
-        for muscle, coeff in muscle_map.items():
-            if muscle is None:
-                continue
-            gain = round(load_points * float(coeff))
-            if gain <= 0:
-                continue
-            muscles[muscle] = int(muscles.get(muscle, 0)) + gain
-            muscle_gains.append((str(muscle), gain))
-            muscle_delta[str(muscle)] = int(muscle_delta.get(str(muscle), 0)) + int(gain)
+        for muscle, gain in muscle_delta.items():
+            muscles[muscle] = int(muscles.get(muscle, 0)) + int(gain)
 
         def xp_to_next(level: int) -> int:
             return 100 + level * 25
@@ -1100,7 +1378,7 @@ class Db:
             }
         ).eq("user_id", user_id).execute()
 
-        muscle_gains_sorted_top3 = sorted(muscle_gains, key=lambda x: x[1], reverse=True)[:3]
+        muscle_gains_sorted_top3 = sorted(muscle_delta.items(), key=lambda x: x[1], reverse=True)[:3]
         return {
             "xp_gain": int(xp_gain),
             "level_new": int(level_new),

@@ -3,8 +3,11 @@ from aiogram.fsm.state import State, StatesGroup
 
 class QuickLogStates(StatesGroup):
     choose_mode = State()
+    choose_category = State()
     choose_exercise = State()
-    search_exercise = State()
+    choose_exercise_inline = State()
+    search_query = State()
+    search_results = State()
     custom_name = State()
     custom_primary_muscle = State()
     enter_weight = State()
@@ -17,12 +20,16 @@ class QuickLogStates(StatesGroup):
 
 class TemplateStates(StatesGroup):
     waiting_name = State()
+    choosing_save_mode = State()
+    choosing_existing = State()
 
 
 class HistoryStates(StatesGroup):
     browsing_list = State()
     viewing_card = State()
     choosing_repeat_mode = State()
+    confirming_toggle = State()
+    confirming_repeat = State()
 
 
 class EditWorkoutStates(StatesGroup):
@@ -37,8 +44,19 @@ class EditWorkoutStates(StatesGroup):
 class SettingsStates(StatesGroup):
     units_menu = State()
     waiting_timezone = State()
+    exercise_lang_menu = State()
+    translate_mode_menu = State()
 
 
 class TemplateBrowseStates(StatesGroup):
     browsing = State()
     confirming = State()
+    confirming_apply = State()
+
+
+class TranslateStates(StatesGroup):
+    waiting_name_ru = State()
+
+
+class SupportStates(StatesGroup):
+    waiting_text = State()
