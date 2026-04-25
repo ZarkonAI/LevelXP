@@ -8,12 +8,26 @@ from aiogram.types import Message
 
 from app import texts
 from app.config import is_admin as is_admin_by_env
-from app.keyboards import exercise_lang_kb, main_menu_kb, settings_kb, translate_mode_kb, units_kb
+from app.handlers.start import _parse_weight_kg
+from app.keyboards import (
+    body_weight_settings_kb,
+    exercise_lang_kb,
+    main_menu_kb,
+    onboarding_weight_kb,
+    settings_kb,
+    translate_mode_kb,
+    units_kb,
+)
 from app.states import SettingsStates
 
 log = logging.getLogger("handlers.settings")
 router = Router()
 TZ_RE = re.compile(r"^UTC[+-]\d{1,2}$")
+
+# Manual test-cases:
+# 1) ⚙️ Настройки -> ⚖️ Вес тела shows current value or "не указан".
+# 2) ⚖️ Вес тела -> ✏️ Изменить -> enter "95" -> save and return to settings.
+# 3) In weight edit press "⏭️ Пропустить" -> body_weight_kg becomes NULL and warning is shown.
 
 
 async def _render_settings(message: Message, db) -> None:
@@ -24,6 +38,72 @@ async def _render_settings(message: Message, db) -> None:
         texts.SETTINGS_TEXT.format(units=units, timezone=timezone_value),
         reply_markup=settings_kb(is_admin=(db.is_admin(user) or is_admin_by_env(message.from_user.id))),
     )
+
+
+@router.message(F.text == "⚖️ Вес тела")
+async def open_body_weight_settings(message: Message, state: FSMContext, db):
+    try:
+        await state.clear()
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        current = db.get_body_weight(user_id=int(user["id"]))
+        value = texts.SETTINGS_WEIGHT_EMPTY if current is None else f"{current:g} кг"
+        await message.answer(
+            texts.SETTINGS_WEIGHT_TITLE.format(value=value),
+            reply_markup=body_weight_settings_kb(),
+        )
+    except Exception:
+        log.exception("open_body_weight_settings failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "✏️ Изменить")
+async def edit_body_weight(message: Message, state: FSMContext):
+    try:
+        await state.set_state(SettingsStates.waiting_body_weight)
+        await message.answer(texts.ONBOARDING_WEIGHT_PROMPT, reply_markup=onboarding_weight_kb())
+    except Exception:
+        log.exception("edit_body_weight failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.waiting_body_weight, F.text == "❌ Отмена")
+async def cancel_edit_body_weight(message: Message, state: FSMContext, db):
+    try:
+        await state.clear()
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("cancel_edit_body_weight failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.waiting_body_weight, F.text == "⏭️ Пропустить")
+async def clear_body_weight(message: Message, state: FSMContext, db):
+    try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.set_body_weight(user_id=int(user["id"]), kg=None)
+        await state.clear()
+        await message.answer(texts.ONBOARDING_WEIGHT_WARNING, reply_markup=main_menu_kb())
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("clear_body_weight failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.waiting_body_weight)
+async def save_body_weight(message: Message, state: FSMContext, db):
+    try:
+        weight = _parse_weight_kg(message.text or "")
+        if weight is None:
+            await message.answer(texts.ERR_NUMBER + "\nДиапазон: 20..350 кг.", reply_markup=onboarding_weight_kb())
+            return
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.set_body_weight(user_id=int(user["id"]), kg=weight)
+        await state.clear()
+        await message.answer(texts.SETTINGS_WEIGHT_UPDATED, reply_markup=main_menu_kb())
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("save_body_weight failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
 @router.message(F.text == "🌐 Язык упражнений")

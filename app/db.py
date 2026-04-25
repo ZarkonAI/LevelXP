@@ -126,7 +126,7 @@ class Db:
 
         res = (
             self.client.table("users")
-            .select("id,telegram_id,username,units,timezone,exercise_lang,translate_mode,role")
+            .select("id,telegram_id,username,units,timezone,exercise_lang,translate_mode,role,body_weight_kg,height_cm")
             .eq("telegram_id", telegram_id)
             .limit(1)
             .execute()
@@ -422,6 +422,26 @@ class Db:
 
     def set_translate_mode(self, user_id: int, enabled: bool) -> None:
         self.client.table("users").update({"translate_mode": bool(enabled)}).eq("id", user_id).execute()
+
+    def get_body_weight(self, user_id: int) -> Optional[float]:
+        res = self.client.table("users").select("body_weight_kg").eq("id", int(user_id)).limit(1).execute()
+        if not res.data:
+            return None
+        value = res.data[0].get("body_weight_kg")
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def set_body_weight(self, user_id: int, kg: Optional[float]) -> None:
+        payload = {"body_weight_kg": None if kg is None else float(kg)}
+        self.client.table("users").update(payload).eq("id", int(user_id)).execute()
+
+    def set_height(self, user_id: int, cm: Optional[int]) -> None:
+        payload = {"height_cm": None if cm is None else int(cm)}
+        self.client.table("users").update(payload).eq("id", int(user_id)).execute()
 
     def update_exercise_name_ru(self, exercise_id: int, name_ru: str) -> None:
         self.client.table("exercises").update({"name_ru": (name_ru or "").strip()}).eq("id", exercise_id).execute()
