@@ -35,7 +35,12 @@ def category_inline_kb() -> InlineKeyboardMarkup:
     for idx in range(0, len(MUSCLE_BUTTONS), 2):
         chunk = MUSCLE_BUTTONS[idx : idx + 2]
         keyboard.append([InlineKeyboardButton(text=label, callback_data=f"cat:{value}") for label, value in chunk])
-    keyboard.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="search:open")])
+    keyboard.append(
+        [
+            InlineKeyboardButton(text="🔎 Поиск", callback_data="search:open"),
+            InlineKeyboardButton(text="➕ Своё упражнение", callback_data="custom:open"),
+        ]
+    )
     keyboard.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back:mode"),
         InlineKeyboardButton(text="↩️ В меню", callback_data="menu:back"),
@@ -122,3 +127,24 @@ def exercise_card_inline_kb(*, is_favorite: bool, is_admin: bool = False, is_fea
 
 def actions_inline_kb(*, is_favorite: bool, is_admin: bool = False, is_featured: bool = False) -> InlineKeyboardMarkup:
     return exercise_card_inline_kb(is_favorite=is_favorite, is_admin=is_admin, is_featured=is_featured)
+
+
+def custom_primary_muscle_inline_kb(*, current_muscle: str | None = None) -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = []
+    muscle_labels = {value: label for label, value in MUSCLE_BUTTONS}
+    for idx in range(0, len(MUSCLE_BUTTONS), 2):
+        chunk = MUSCLE_BUTTONS[idx : idx + 2]
+        keyboard.append(
+            [InlineKeyboardButton(text=label, callback_data=f"custom:muscle:{value}") for label, value in chunk]
+        )
+    if current_muscle in muscle_labels:
+        keyboard.append(
+            [InlineKeyboardButton(text=f"✅ Взять текущую ({muscle_labels[current_muscle]})", callback_data="custom:muscle:current")]
+        )
+    keyboard.append(
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="back:search"),
+            InlineKeyboardButton(text="↩️ В меню", callback_data="menu:back"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

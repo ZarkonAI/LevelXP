@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from app import db as db_module
 from app import texts
 from app.keyboards import back_cancel_kb, confirm_kb, exercise_card_kb, exercise_category_kb, exercises_kb, main_menu_kb, mode_kb, muscle_choice_kb, translate_exercise_actions_kb
-from app.keyboards_inline import actions_inline_kb, category_inline_kb, exercises_inline_kb, mode_inline_kb, search_prompt_inline_kb, search_results_inline_kb, training_start_inline_kb
+from app.keyboards_inline import actions_inline_kb, category_inline_kb, custom_primary_muscle_inline_kb, exercises_inline_kb, mode_inline_kb, search_prompt_inline_kb, search_results_inline_kb, training_start_inline_kb
 from app.states import QuickLogStates, TranslateStates
 log = logging.getLogger("handlers.training")
 router = Router()
@@ -233,30 +233,27 @@ def _search_exercises(exercises: list[dict], query: str) -> list[dict]:
                 enriched["_token_hit"] = True
                 token_hits.append(enriched)
 
-    if query_len < 5:
-        token_hits.sort(key=lambda row: (-int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
+    token_hits.sort(key=lambda row: (-int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
+    if token_hits:
         return token_hits
 
-    use_fuzzy = query_len >= 5 or len(token_hits) < 6
     fuzzy_hits: list[dict] = []
-    if use_fuzzy:
-        threshold = 0.55 if query_len < 7 else 0.45
-        for exercise in exercises:
-            score = max(
-                dice(normalized_query, str(exercise.get("name_ru") or "")),
-                dice(normalized_query, str(exercise.get("name") or "")),
-            )
-            if score >= threshold:
-                enriched = dict(exercise)
-                enriched["_score"] = score
-                exercise_id = int(enriched.get("id") or 0)
-                if exercise_id > 0 and exercise_id not in seen_ids:
-                    seen_ids.add(exercise_id)
-                    fuzzy_hits.append(enriched)
+    threshold = 0.7 if query_len <= 3 else 0.62 if query_len <= 5 else 0.55
+    for exercise in exercises:
+        score = max(
+            dice(normalized_query, str(exercise.get("name_ru") or "")),
+            dice(normalized_query, str(exercise.get("name") or "")),
+        )
+        if score >= threshold:
+            enriched = dict(exercise)
+            enriched["_score"] = score
+            exercise_id = int(enriched.get("id") or 0)
+            if exercise_id > 0 and exercise_id not in seen_ids:
+                seen_ids.add(exercise_id)
+                fuzzy_hits.append(enriched)
 
-    token_hits.sort(key=lambda row: (-int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
     fuzzy_hits.sort(key=lambda row: (-float(row.get("_score") or 0), -int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
-    return [*token_hits, *fuzzy_hits]
+    return fuzzy_hits
 
 
 async def _show_search_results_wizard(state: FSMContext, bot, *, page: int = 0):
@@ -528,6 +525,17 @@ async def open_search_inline(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(QuickLogStates.choose_category, F.data == "custom:open")
+@router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "custom:open")
+@router.callback_query(QuickLogStates.search_results, F.data == "custom:open")
+async def open_custom_inline(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.update_data(search_origin=data.get("search_origin") or "category", wizard_step="custom_name")
+    await state.set_state(QuickLogStates.custom_name)
+    await _edit_wizard_text(state, callback.bot, texts.ENTER_CUSTOM_NAME, search_prompt_inline_kb())
+    await callback.answer()
+
+
 @router.callback_query(QuickLogStates.choose_exercise_inline, F.data == "search:open")
 async def open_search_from_exercises_inline(callback: CallbackQuery, state: FSMContext):
     await state.update_data(search_query=None, search_origin="exercise_inline", wizard_step="search_wait_query")
@@ -710,6 +718,62 @@ async def search_reset_inline(callback: CallbackQuery, state: FSMContext):
     await state.update_data(wizard_step="choose_category")
     await _edit_wizard_text(state, callback.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
     await callback.answer()
+
+
+@router.callback_query(QuickLogStates.custom_primary_muscle, F.data.startswith("custom:muscle:"))
+async def custom_primary_muscle_inline(callback: CallbackQuery, state: FSMContext, db):
+    try:
+        choice = str(callback.data or "").split(":", 2)[2]
+        data = await state.get_data()
+        exercise_name = str(data.get("exercise_name") or "").strip()
+        if not exercise_name:
+            await state.set_state(QuickLogStates.custom_name)
+            await _edit_wizard_text(state, callback.bot, texts.ENTER_CUSTOM_NAME, search_prompt_inline_kb())
+            await callback.answer()
+            return
+        selected_category = str(data.get("selected_category") or "").strip().lower()
+        if choice == "current":
+            primary_muscle = selected_category if selected_category in MUSCLE_LABELS else None
+        else:
+            primary_muscle = choice if choice in MUSCLE_LABELS else None
+        if not primary_muscle:
+            await _edit_wizard_text(
+                state,
+                callback.bot,
+                texts.CHOOSE_PRIMARY_MUSCLE,
+                custom_primary_muscle_inline_kb(current_muscle=selected_category or None),
+            )
+            await callback.answer()
+            return
+        user = db.get_or_create_user(callback.from_user.id, callback.from_user.username)
+        try:
+            exercise = db.create_custom_exercise(int(user["id"]), exercise_name, primary_muscle)
+        except ValueError:
+            await state.set_state(QuickLogStates.custom_name)
+            await _edit_wizard_text(state, callback.bot, texts.ERR_EXERCISE_NAME, search_prompt_inline_kb())
+            await callback.answer()
+            return
+        await state.update_data(
+            exercise_id=exercise["id"],
+            exercise_name=exercise.get("display_name"),
+            primary_muscle=primary_muscle,
+            selected_category=primary_muscle,
+            weight_mode="external",
+            xp_mult=1.0,
+            body_weight_missing=user.get("body_weight_kg") is None,
+            wizard_step="enter_weight",
+        )
+        await state.set_state(QuickLogStates.enter_weight)
+        await _edit_wizard_text(
+            state,
+            callback.bot,
+            f"{_weight_prompt_text(await state.get_data())}{_prefill_hint(data.get('prefill_weight'), ' кг')}",
+            search_prompt_inline_kb(),
+        )
+        await callback.answer()
+    except Exception:
+        log.exception("custom_primary_muscle_inline failed")
+        await callback.answer(texts.TECH_ERROR, show_alert=True)
 @router.message(F.text == "❌ Отмена")
 async def cancel_anywhere(message: Message, state: FSMContext):
     try:
@@ -753,12 +817,20 @@ async def back_from_inline_wizard_text(message: Message, state: FSMContext, db):
     await _show_exercise_list_wizard(state, message.bot, db, int(user["id"]), page=page)
 @router.message(QuickLogStates.custom_name, F.text == "↩️ Назад")
 async def back_from_custom_name(message: Message, state: FSMContext):
-    await state.set_state(QuickLogStates.choose_category)
     data = await state.get_data()
+    await state.set_state(QuickLogStates.choose_category)
+    await state.update_data(wizard_step="choose_category")
+    if data.get("wizard_message_id"):
+        await _edit_wizard_text(state, message.bot, texts.CHOOSE_CATEGORY, category_inline_kb())
+        return
     await message.answer(texts.CHOOSE_CATEGORY, reply_markup=exercise_category_kb(translate_mode=data.get("translate_mode") is True))
 @router.message(QuickLogStates.custom_primary_muscle, F.text == "↩️ Назад")
 async def back_from_custom_primary(message: Message, state: FSMContext):
     await state.set_state(QuickLogStates.custom_name)
+    data = await state.get_data()
+    if data.get("wizard_message_id"):
+        await _edit_wizard_text(state, message.bot, texts.ENTER_CUSTOM_NAME, search_prompt_inline_kb())
+        return
     await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
 @router.message(QuickLogStates.enter_weight, F.text == "↩️ Назад")
 async def back_from_weight(message: Message, state: FSMContext, db):
@@ -1045,28 +1117,55 @@ async def search_query(message: Message, state: FSMContext, db):
 @router.message(QuickLogStates.custom_name)
 async def custom_name(message: Message, state: FSMContext):
     try:
+        data = await state.get_data()
+        inline_wizard = bool(data.get("wizard_message_id"))
         exercise_name = (message.text or "").strip()
         if not exercise_name:
-            await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
+            if inline_wizard:
+                await _edit_wizard_text(state, message.bot, texts.ENTER_CUSTOM_NAME, search_prompt_inline_kb())
+            else:
+                await message.answer(texts.ENTER_CUSTOM_NAME, reply_markup=back_cancel_kb())
             return
         if not _validate_name(exercise_name):
             await state.set_state(QuickLogStates.custom_name)
-            await message.answer(texts.ERR_EXERCISE_NAME, reply_markup=back_cancel_kb())
+            if inline_wizard:
+                await _edit_wizard_text(state, message.bot, texts.ERR_EXERCISE_NAME, search_prompt_inline_kb())
+            else:
+                await message.answer(texts.ERR_EXERCISE_NAME, reply_markup=back_cancel_kb())
             return
         await state.update_data(exercise_name=exercise_name)
         await state.set_state(QuickLogStates.custom_primary_muscle)
-        await message.answer(texts.CHOOSE_PRIMARY_MUSCLE, reply_markup=muscle_choice_kb())
+        data = await state.get_data()
+        selected_category = str(data.get("selected_category") or "").strip().lower()
+        if inline_wizard:
+            await _edit_wizard_text(
+                state,
+                message.bot,
+                texts.CHOOSE_PRIMARY_MUSCLE,
+                custom_primary_muscle_inline_kb(current_muscle=selected_category or None),
+            )
+        else:
+            await message.answer(texts.CHOOSE_PRIMARY_MUSCLE, reply_markup=muscle_choice_kb())
     except Exception:
         log.exception("custom_name failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 @router.message(QuickLogStates.custom_primary_muscle)
 async def custom_primary_muscle(message: Message, state: FSMContext, db):
     try:
+        data = await state.get_data()
+        if data.get("wizard_message_id"):
+            selected_category = str(data.get("selected_category") or "").strip().lower()
+            await _edit_wizard_text(
+                state,
+                message.bot,
+                texts.CHOOSE_PRIMARY_MUSCLE,
+                custom_primary_muscle_inline_kb(current_muscle=selected_category or None),
+            )
+            return
         primary_muscle = MUSCLE_MAP.get(message.text or "")
         if not primary_muscle:
             await message.answer(texts.CHOOSE_PRIMARY_MUSCLE, reply_markup=muscle_choice_kb())
             return
-        data = await state.get_data()
         exercise_name = data.get("exercise_name")
         if not exercise_name:
             await state.set_state(QuickLogStates.custom_name)
