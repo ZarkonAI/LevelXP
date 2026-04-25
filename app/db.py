@@ -53,9 +53,39 @@ BASE_EXERCISES = [
     },
     {
         "name": "Подтягивания",
+        "name_ru": "Подтягивания",
         "category": "strength",
         "primary_muscle": "back",
         "muscle_map": {"back": 0.7, "arms": 0.3},
+        "weight_mode": "bodyweight_plus",
+        "xp_mult": 1.0,
+    },
+    {
+        "name": "Assisted Pull-Up (Gravitron)",
+        "name_ru": "Подтягивания в гравитроне",
+        "category": "strength",
+        "primary_muscle": "back",
+        "muscle_map": {"back": 0.7, "arms": 0.3},
+        "weight_mode": "assist",
+        "xp_mult": 1.0,
+    },
+    {
+        "name": "Negative Pull-Up",
+        "name_ru": "Негативные подтягивания",
+        "category": "strength",
+        "primary_muscle": "back",
+        "muscle_map": {"back": 0.7, "arms": 0.3},
+        "weight_mode": "bodyweight_plus",
+        "xp_mult": 0.6,
+    },
+    {
+        "name": "Negative Assisted Pull-Up (Gravitron)",
+        "name_ru": "Негативные подтягивания в гравитроне",
+        "category": "strength",
+        "primary_muscle": "back",
+        "muscle_map": {"back": 0.7, "arms": 0.3},
+        "weight_mode": "assist",
+        "xp_mult": 0.6,
     },
     {
         "name": "Жим стоя",
@@ -111,12 +141,29 @@ class Db:
     def seed_exercises_if_empty(self) -> None:
         """Idempotent seed: если упражнений нет — добавим базовые."""
         try:
-            res = self.client.table("exercises").select("id").limit(1).execute()
-            if res.data:
+            res = self.client.table("exercises").select("id,name,name_ru").limit(1000).execute()
+            existing_rows = res.data or []
+            if not existing_rows:
+                self.client.table("exercises").insert(BASE_EXERCISES).execute()
+                self._ex_cache = {"data": None, "expires_at": None}
+                log.info("Seeded base exercises: %s", len(BASE_EXERCISES))
                 return
-            self.client.table("exercises").insert(BASE_EXERCISES).execute()
-            self._ex_cache = {"data": None, "expires_at": None}
-            log.info("Seeded base exercises: %s", len(BASE_EXERCISES))
+
+            existing_names = {str(row.get("name") or "").strip().lower() for row in existing_rows}
+            existing_names_ru = {str(row.get("name_ru") or "").strip().lower() for row in existing_rows}
+            missing_rows = []
+            for row in BASE_EXERCISES:
+                name = str(row.get("name") or "").strip().lower()
+                name_ru = str(row.get("name_ru") or "").strip().lower()
+                if name and name in existing_names:
+                    continue
+                if name_ru and name_ru in existing_names_ru:
+                    continue
+                missing_rows.append(row)
+            if missing_rows:
+                self.client.table("exercises").insert(missing_rows).execute()
+                self._ex_cache = {"data": None, "expires_at": None}
+                log.info("Seeded missing base exercises: %s", len(missing_rows))
         except Exception:
             log.exception("Failed to seed exercises")
 
@@ -208,7 +255,9 @@ class Db:
     def get_exercise(self, exercise_id: int, *, user_id: Optional[int] = None) -> Dict[str, Any]:
         res = (
             self.client.table("exercises")
-            .select("id,name,name_ru,image_url,instructions,instructions_ru,equipment,primary_muscle,muscle_map,is_featured")
+            .select(
+                "id,name,name_ru,image_url,instructions,instructions_ru,equipment,primary_muscle,muscle_map,is_featured,weight_mode,xp_mult"
+            )
             .eq("id", exercise_id)
             .limit(1)
             .execute()
@@ -248,7 +297,7 @@ class Db:
         favorite_ids = self.list_favorite_ids(user_id=int(user_id))
 
         def _build_query(include_uses_count: bool = True):
-            select_fields = "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at"
+            select_fields = "id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,is_featured,created_at,weight_mode,xp_mult"
             if include_uses_count:
                 select_fields = f"{select_fields},uses_count"
 
@@ -452,7 +501,7 @@ class Db:
             return None
         res = (
             self.client.table("exercises")
-            .select("id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,created_at")
+            .select("id,name,name_ru,image_url,primary_muscle,muscle_map,equipment,created_at,weight_mode,xp_mult")
             .is_("owner_user_id", "null")
             .eq("primary_muscle", category)
             .or_("name_ru.is.null,name_ru.eq.")
@@ -881,6 +930,7 @@ class Db:
             weight=weight_val,
             reps=reps_val,
             sets_count=sets_val,
+            user_id=user_id,
         )
 
         self.client.table("sets").update(
@@ -1170,14 +1220,42 @@ class Db:
         self.client.table("templates").update({"payload": payload}).eq("id", template_id).eq("user_id", user_id).execute()
         return True
 
-    def compute_delta(self, exercise_id: int, weight: float, reps: int, sets_count: int) -> tuple[int, Dict[str, int], int]:
-        exercise = self.get_exercise(exercise_id)
+    def compute_delta(
+        self, exercise_id: int, weight: float, reps: int, sets_count: int, user_id: Optional[int] = None
+    ) -> tuple[int, Dict[str, int], int]:
+        exercise = self.get_exercise(exercise_id, user_id=user_id)
+        weight_mode = str(exercise.get("weight_mode") or "external").strip().lower()
+        xp_mult = self._to_float(exercise.get("xp_mult"), 1.0)
+        if xp_mult <= 0:
+            xp_mult = 1.0
+
+        body_weight = self.get_body_weight(int(user_id)) if user_id is not None else None
+        warning = None
         weight_val = self._to_float(weight, 0.0)
         reps_val = self._to_int(reps, 0)
         sets_val = self._to_int(sets_count, 0)
-        volume = weight_val * reps_val * sets_val
+        if weight_mode == "bodyweight_plus":
+            if body_weight is None:
+                effective_weight = weight_val
+                warning = "body_weight_kg_missing_bodyweight_plus"
+            else:
+                effective_weight = max(0.0, body_weight + weight_val)
+        elif weight_mode == "assist":
+            if body_weight is None:
+                effective_weight = 0.0
+                warning = "body_weight_kg_missing_assist"
+            else:
+                effective_weight = max(0.0, body_weight - weight_val)
+        else:
+            effective_weight = max(0.0, weight_val)
+
+        if warning:
+            log.warning("compute_delta warning=%s user_id=%s exercise_id=%s", warning, user_id, exercise_id)
+
+        volume = effective_weight * reps_val * sets_val
         load_points = math.sqrt(max(0.0, volume))
-        total_xp = max(5, round(load_points * 0.8))
+        effective_load = load_points * xp_mult
+        total_xp = max(5, round(effective_load * 0.8))
 
         muscle_map = exercise.get("muscle_map") or {}
         primary_muscle = exercise.get("primary_muscle")
@@ -1188,13 +1266,15 @@ class Db:
         for muscle, coeff in muscle_map.items():
             if muscle is None:
                 continue
-            gain = round(load_points * float(coeff))
+            gain = round(effective_load * float(coeff))
             if gain <= 0:
                 continue
             muscle_delta[str(muscle)] = int(muscle_delta.get(str(muscle), 0)) + int(gain)
         return int(total_xp), muscle_delta, int(sets_val)
 
-    def compute_delta_from_payload(self, payload_items: List[Dict[str, Any]]) -> tuple[int, Dict[str, int], int]:
+    def compute_delta_from_payload(
+        self, payload_items: List[Dict[str, Any]], user_id: Optional[int] = None
+    ) -> tuple[int, Dict[str, int], int]:
         total_xp = 0
         total_sets = 0
         muscle_delta: Dict[str, int] = {}
@@ -1207,6 +1287,7 @@ class Db:
                 weight=float(item.get("weight") or 0),
                 reps=int(item.get("reps") or 0),
                 sets_count=int(item.get("sets_count") or 0),
+                user_id=user_id,
             )
             total_xp += int(xp_item)
             total_sets += int(sets_item)
@@ -1366,6 +1447,7 @@ class Db:
             weight=weight,
             reps=reps,
             sets_count=sets_count,
+            user_id=user_id,
         )
 
         muscles = progress.get("muscles") or {}
