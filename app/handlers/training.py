@@ -90,6 +90,8 @@ async def _render_last_category_exercises(message: Message, state: FSMContext):
                 "primary_muscle": row.get("primary_muscle"),
                 "muscle_map": row.get("muscle_map"),
                 "equipment": row.get("equipment"),
+                "weight_mode": row.get("weight_mode"),
+                "xp_mult": row.get("xp_mult"),
                 "is_featured": bool(row.get("is_featured")),
             }
         )
@@ -354,6 +356,19 @@ def _prefill_hint(value: float | int | None, suffix: str = "") -> str:
         return ""
     formatted = f"{float(value):g}" if isinstance(value, float) else str(value)
     return f"\nТекущее: {formatted}{suffix}. Введи новое или отправь '.' чтобы оставить как есть"
+
+
+def _weight_prompt_text(data: dict) -> str:
+    weight_mode = str(data.get("weight_mode") or "external").strip().lower()
+    if weight_mode == "bodyweight_plus":
+        text = texts.ENTER_WEIGHT_BODYWEIGHT_PLUS
+    elif weight_mode == "assist":
+        text = texts.ENTER_WEIGHT_ASSIST
+    else:
+        text = texts.ENTER_WEIGHT_EXTERNAL
+    if bool(data.get("body_weight_missing")):
+        text = f"{text}\n{texts.WEIGHT_MODE_BODY_WEIGHT_WARNING}"
+    return text
 def _validate_name(name: str) -> bool:
     clean = (name or "").strip()
     if len(clean) < 2 or len(clean) > 60:
@@ -416,6 +431,8 @@ async def _show_choose_exercise(message: Message, state: FSMContext):
             "primary_muscle": exercise.get("primary_muscle"),
             "muscle_map": exercise.get("muscle_map"),
             "equipment": exercise.get("equipment"),
+            "weight_mode": exercise.get("weight_mode"),
+            "xp_mult": exercise.get("xp_mult"),
             "is_featured": bool(exercise.get("is_featured")),
         }
         for idx, exercise in enumerate(exercises, start=1)
@@ -427,7 +444,7 @@ async def _show_choose_exercise(message: Message, state: FSMContext):
 
 async def _goto_enter_weight(message: Message, state: FSMContext, data: dict):
     await state.set_state(QuickLogStates.enter_weight)
-    await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+    await message.answer(f"{_weight_prompt_text(data)}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
 @router.message(F.text == "🏋️ Тренировка")
 async def training_menu(message: Message, state: FSMContext):
     try:
@@ -584,6 +601,9 @@ async def choose_exercise_inline(callback: CallbackQuery, state: FSMContext, db)
         image_url=exercise.get("image_url"),
         selected_exercise_id=exercise_id,
         selected_exercise_name_en=exercise.get("name") or display_name,
+        weight_mode=str(exercise.get("weight_mode") or "external"),
+        xp_mult=float(exercise.get("xp_mult") or 1.0),
+        body_weight_missing=user.get("body_weight_kg") is None,
         exercise_is_featured=bool(exercise.get("is_featured")),
         last_exercise_id=exercise_id,
         last_category=data.get("selected_category"),
@@ -931,6 +951,7 @@ async def continue_after_exercise_card(message: Message, state: FSMContext):
 async def choose_exercise(message: Message, state: FSMContext, db):
     try:
         data = await state.get_data()
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         ex_map = data.get("ex_map") or {}
         match = EXERCISE_PICK_RE.match((message.text or "").strip())
         selected = ex_map.get(match.group(1)) if match else None
@@ -950,6 +971,9 @@ async def choose_exercise(message: Message, state: FSMContext, db):
             exercise_is_featured=bool(selected.get("is_featured")),
             selected_exercise_id=selected["id"],
             selected_exercise_name_en=selected.get("name") or display_name,
+            weight_mode=str(selected.get("weight_mode") or "external"),
+            xp_mult=float(selected.get("xp_mult") or 1.0),
+            body_weight_missing=user.get("body_weight_kg") is None,
             last_category=data.get("selected_category"),
         )
         if data.get("translate_mode"):
@@ -1056,8 +1080,12 @@ async def custom_primary_muscle(message: Message, state: FSMContext, db):
             await state.set_state(QuickLogStates.custom_name)
             return
         await state.update_data(exercise_id=exercise["id"], exercise_name=exercise.get("display_name"), primary_muscle=primary_muscle)
+        await state.update_data(weight_mode="external", xp_mult=1.0, body_weight_missing=user.get("body_weight_kg") is None)
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await message.answer(
+            f"{_weight_prompt_text(await state.get_data())}{_prefill_hint(data.get('prefill_weight'), ' кг')}",
+            reply_markup=back_cancel_kb(),
+        )
     except Exception:
         log.exception("custom_primary_muscle failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
@@ -1201,7 +1229,7 @@ async def edit_quick_log(message: Message, state: FSMContext):
             data.pop(key, None)
         await state.set_data(data)
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
+        await message.answer(f"{_weight_prompt_text(data)}{_prefill_hint(data.get('prefill_weight'), ' кг')}", reply_markup=back_cancel_kb())
     except Exception:
         log.exception("edit_quick_log failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())

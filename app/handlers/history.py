@@ -204,6 +204,7 @@ async def ask_repeat_confirm(message: Message, state: FSMContext, db):
             weight=float(payload_item.get("weight") or 0),
             reps=int(payload_item.get("reps") or 0),
             sets_count=int(payload_item.get("sets_count") or 0),
+            user_id=int(user["id"]),
         )
         await state.set_state(HistoryStates.confirming_repeat)
         await message.answer(
@@ -232,6 +233,7 @@ async def repeat_from_history_exact(message: Message, state: FSMContext, db):
             weight=float(payload_item.get("weight") or 0),
             reps=int(payload_item.get("reps") or 0),
             sets_count=int(payload_item.get("sets_count") or 0),
+            user_id=int(user["id"]),
         )
         new_workout_id = db.clone_workout_as_new(user_id=int(user["id"]), workout_id=int(selected_workout_id))
         db.award_and_update_progress(

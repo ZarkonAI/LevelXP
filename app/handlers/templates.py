@@ -128,7 +128,7 @@ async def ask_apply_template_confirm(message: Message, state: FSMContext, db):
             return
 
         payload = template.get("payload") if isinstance(template.get("payload"), list) else []
-        total_xp, muscle_delta, _ = db.compute_delta_from_payload(payload)
+        total_xp, muscle_delta, _ = db.compute_delta_from_payload(payload, user_id=int(user["id"]))
         await state.update_data(confirm_template_payload=payload)
         await state.set_state(TemplateBrowseStates.confirming_apply)
         await message.answer(_format_delta_warning(db, total_xp, muscle_delta), reply_markup=continue_back_kb())
@@ -155,7 +155,7 @@ async def apply_template(message: Message, state: FSMContext, db):
 
         workout_id = db.create_workout_from_template(user_id=int(user["id"]), template_row=template)
         payload = template.get("payload") if isinstance(template.get("payload"), list) else []
-        total_xp, muscle_delta, total_sets = db.compute_delta_from_payload(payload)
+        total_xp, muscle_delta, total_sets = db.compute_delta_from_payload(payload, user_id=int(user["id"]))
 
         top = sorted(muscle_delta.items(), key=lambda x: x[1], reverse=True)[:3]
         for item in payload:
