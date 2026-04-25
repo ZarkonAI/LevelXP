@@ -46,6 +46,12 @@ class SettingsStates(StatesGroup):
     waiting_timezone = State()
     exercise_lang_menu = State()
     translate_mode_menu = State()
+    waiting_body_weight = State()
+
+
+class OnboardingStates(StatesGroup):
+    waiting_body_weight = State()
+    waiting_height = State()
 
 
 class TemplateBrowseStates(StatesGroup):

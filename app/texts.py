@@ -73,6 +73,16 @@ SETTINGS_TIMEZONE_PROMPT = "Введи часовой пояс в формате
 SETTINGS_TIMEZONE_INVALID = "Неверный формат. Используй UTC+2 или UTC-5."
 SETTINGS_EXERCISE_LANG_PROMPT = "Выбери язык упражнений:"
 SETTINGS_TRANSLATE_MODE_PROMPT = "Режим ручного перевода названий упражнений:"
+ONBOARDING_WEIGHT_PROMPT = "Укажи вес тела в кг (например: 80 или 80,5)."
+ONBOARDING_WEIGHT_WARNING = (
+    "⚠️ Вес тела не указан: без него часть упражнений будет считаться неточно "
+    "(подтягивания/гравитрон)."
+)
+ONBOARDING_HEIGHT_PROMPT = "Укажи рост в см (опционально, например: 175)."
+ONBOARDING_DONE = "Профиль сохранён ✅"
+SETTINGS_WEIGHT_TITLE = "<b>⚖️ Вес тела</b>\nТекущее значение: <b>{value}</b>"
+SETTINGS_WEIGHT_EMPTY = "не указан"
+SETTINGS_WEIGHT_UPDATED = "Вес тела обновлён ✅"
 TECHNIQUE_CAPTION = "{display_name}\n🖼 техника"
 CHOOSE_EXERCISE_FROM_LIST = "Выбери пункт из списка"
 RU_NAME_PROMPT = "Введи русское название для упражнения или '-' чтобы пропустить."
