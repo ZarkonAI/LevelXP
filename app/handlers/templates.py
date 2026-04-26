@@ -56,6 +56,19 @@ def _technique_line(image_url: str) -> str:
     return f"{texts.TECHNIQUE_LINK_PREFIX} {image_url}"
 
 
+def _format_template_edit_intro(item: dict, idx: int, total: int, exercise_name: str) -> str:
+    rest_pattern = item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else []
+    if rest_pattern:
+        rest_text = f"паттерн {', '.join(f'{float(s or 0) / 60:g}' for s in rest_pattern)} мин"
+    else:
+        rest_text = f"{float(item.get('rest_seconds') or 0) / 60:g} мин"
+    return (
+        f"Шаблон: упражнение {idx}/{total} — {exercise_name}\n"
+        f"Было: {float(item.get('weight') or 0):g}кг × {int(item.get('reps') or 0)} × {int(item.get('sets_count') or 0)} | отдых: {rest_text}\n"
+        "Введи новое или '.' чтобы оставить как есть"
+    )
+
+
 def _format_delta_warning(db, total_xp: int, muscle_delta: dict) -> str:
     return "<b>Подтверждение</b>\n" + db.format_delta(total_xp=total_xp, muscle_delta=muscle_delta)
 
@@ -220,6 +233,10 @@ async def edit_template_before_apply(message: Message, state: FSMContext, db):
             mode="pattern" if rest_pattern else "strength",
             exercise_id=first.get("exercise_id"),
             exercise_name=exercise_name,
+            exercise_display_name=exercise_name,
+            template_edit_index=0,
+            template_edit_total=len(payload),
+            template_edit_flow="apply_template",
             template_edit_payload=payload,
             prefill_weight=float(first.get("weight") or 0),
             prefill_reps=int(first.get("reps") or 0),
@@ -229,7 +246,11 @@ async def edit_template_before_apply(message: Message, state: FSMContext, db):
             prefill_rest_pattern_text=", ".join(f"{v:g}" for v in prefill_rest_pattern_minutes),
         )
         await state.set_state(QuickLogStates.enter_weight)
-        await message.answer(f"{texts.ENTER_WEIGHT}\nТекущее: {float(first.get('weight') or 0):g} кг. Введи новое или отправь '.' чтобы оставить как есть", reply_markup=back_cancel_kb())
+        await message.answer(_format_template_edit_intro(first, 1, len(payload), exercise_name))
+        await message.answer(
+            f"{texts.ENTER_WEIGHT}\nТекущее: {float(first.get('weight') or 0):g} кг. Введи новое или отправь '.' чтобы оставить как есть",
+            reply_markup=back_cancel_kb(),
+        )
     except Exception:
         log.exception("edit_template_before_apply failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
