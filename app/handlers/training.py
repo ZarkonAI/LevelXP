@@ -355,6 +355,19 @@ def _prefill_hint(value: float | int | None, suffix: str = "") -> str:
     return f"\nТекущее: {formatted}{suffix}. Введи новое или отправь '.' чтобы оставить как есть"
 
 
+def _format_template_edit_intro(item: dict, idx: int, total: int, exercise_name: str) -> str:
+    rest_pattern = item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else []
+    if rest_pattern:
+        rest_text = f"паттерн {', '.join(f'{float(s or 0) / 60:g}' for s in rest_pattern)} мин"
+    else:
+        rest_text = f"{float(item.get('rest_seconds') or 0) / 60:g} мин"
+    return (
+        f"Шаблон: упражнение {idx}/{total} — {exercise_name}\n"
+        f"Было: {float(item.get('weight') or 0):g}кг × {int(item.get('reps') or 0)} × {int(item.get('sets_count') or 0)} | отдых: {rest_text}\n"
+        "Введи новое или '.' чтобы оставить как есть"
+    )
+
+
 def _weight_prompt_text(data: dict) -> str:
     weight_mode = str(data.get("weight_mode") or "external").strip().lower()
     if weight_mode == "bodyweight_plus":
@@ -1345,21 +1358,67 @@ async def save_quick_log(message: Message, state: FSMContext, db):
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
         db.ensure_progress(user["id"])
         template_payload = data.get("template_edit_payload") if isinstance(data.get("template_edit_payload"), list) else None
-        if template_payload is not None:
+        template_flow = bool(data.get("template_edit_flow"))
+        if template_payload is not None and template_flow:
             payload = list(template_payload)
-            first = payload[0] if payload else {}
-            first["weight"] = float(data["weight"])
-            first["reps"] = int(data["reps"])
-            first["sets_count"] = int(data["sets_count"])
-            first["rest_seconds"] = int(data["rest_seconds"])
-            first["rest_pattern"] = data.get("rest_pattern_seconds")
-            if payload:
-                payload[0] = first
+            idx = int(data.get("template_edit_index") or 0)
+            total = int(data.get("template_edit_total") or len(payload))
+            if idx < 0 or idx >= len(payload):
+                raise ValueError("template_edit_index out of range")
+
+            current = dict(payload[idx] or {})
+            current["weight"] = float(data["weight"])
+            current["reps"] = int(data["reps"])
+            current["sets_count"] = int(data["sets_count"])
+            current["rest_seconds"] = int(data["rest_seconds"])
+            current["rest_pattern"] = data.get("rest_pattern_seconds") if data.get("mode") == "pattern" else None
+            payload[idx] = current
+
+            if idx < total - 1:
+                next_idx = idx + 1
+                next_item = payload[next_idx]
+                next_rest_pattern = next_item.get("rest_pattern") if isinstance(next_item.get("rest_pattern"), list) else []
+                next_exercise_name = "Упражнение"
+                if next_item.get("exercise_id") is not None:
+                    try:
+                        next_exercise_name = str(db.get_exercise(int(next_item.get("exercise_id"))).get("display_name") or next_exercise_name)
+                    except Exception:
+                        pass
+                await state.update_data(
+                    template_edit_payload=payload,
+                    template_edit_index=next_idx,
+                    mode="pattern" if next_rest_pattern else "strength",
+                    exercise_id=next_item.get("exercise_id"),
+                    exercise_name=next_exercise_name,
+                    exercise_display_name=next_exercise_name,
+                    prefill_weight=float(next_item.get("weight") or 0),
+                    prefill_reps=int(next_item.get("reps") or 0),
+                    prefill_sets=int(next_item.get("sets_count") or 0),
+                    prefill_rest_minutes=float(next_item.get("rest_seconds") or 0) / 60,
+                    prefill_rest_pattern_minutes=[float(s or 0) / 60 for s in next_rest_pattern],
+                    prefill_rest_pattern_text=", ".join(f"{float(s or 0) / 60:g}" for s in next_rest_pattern),
+                    weight=None,
+                    reps=None,
+                    sets_count=None,
+                    rest_minutes=None,
+                    rest_seconds=None,
+                    rest_pattern_minutes=None,
+                    rest_pattern_seconds=None,
+                    saved=False,
+                )
+                await state.set_state(QuickLogStates.enter_weight)
+                await message.answer(_format_template_edit_intro(next_item, next_idx + 1, total, next_exercise_name))
+                await message.answer(
+                    f"{texts.ENTER_WEIGHT}\nТекущее: {float(next_item.get('weight') or 0):g} кг. Введи новое или отправь '.' чтобы оставить как есть",
+                    reply_markup=back_cancel_kb(),
+                )
+                return
+
             workout_id = db.create_workout(user["id"], title=_build_workout_title(data), mode="template", status="planned")
-            for idx, item in enumerate(payload, start=1):
+            for item_idx, item in enumerate(payload, start=1):
                 if item.get("exercise_id") is None:
                     continue
-                item_id = db.create_workout_item(workout_id, int(item["exercise_id"]), order_index=idx)
+                item_id = db.create_workout_item(workout_id, int(item["exercise_id"]), order_index=item_idx)
                 db.create_set(
                     workout_item_id=item_id,
                     weight=float(item.get("weight") or 0),
@@ -1368,6 +1427,7 @@ async def save_quick_log(message: Message, state: FSMContext, db):
                     rest_seconds=int(item.get("rest_seconds") or 0),
                     rest_pattern_seconds=item.get("rest_pattern") if isinstance(item.get("rest_pattern"), list) else None,
                 )
+            template_payload = payload
         else:
             workout_id = db.create_workout(
                 user["id"],
@@ -1395,23 +1455,22 @@ async def save_quick_log(message: Message, state: FSMContext, db):
             total_xp = 0
             total_sets = 0
             muscle_delta = {}
-            top = []
-            for idx, item in enumerate(template_payload):
+            for item in template_payload:
                 ex_id = item.get("exercise_id")
                 if ex_id is None:
                     continue
                 award_item = db.award_and_update_progress(
                     user_id=int(user["id"]),
                     exercise_id=int(ex_id),
-                    weight=float(data["weight"]) if idx == 0 else float(item.get("weight") or 0),
-                    reps=int(data["reps"]) if idx == 0 else int(item.get("reps") or 0),
-                    sets_count=int(data["sets_count"]) if idx == 0 else int(item.get("sets_count") or 0),
+                    weight=float(item.get("weight") or 0),
+                    reps=int(item.get("reps") or 0),
+                    sets_count=int(item.get("sets_count") or 0),
                 )
                 total_xp += int(award_item.get("xp_gain") or 0)
                 total_sets += int(award_item.get("total_sets_for_workout") or 0)
                 for m, val in (award_item.get("muscle_delta") or {}).items():
                     muscle_delta[m] = int(muscle_delta.get(m, 0)) + int(val)
-                top.extend(award_item.get("muscle_gains_sorted_top3") or [])
+            top = sorted(muscle_delta.items(), key=lambda x: x[1], reverse=True)[:3]
             db.update_workout_metrics(
                 user_id=int(user["id"]),
                 workout_id=int(workout_id),
