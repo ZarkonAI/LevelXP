@@ -173,7 +173,10 @@ class Db:
 
         res = (
             self.client.table("users")
-            .select("id,telegram_id,username,units,timezone,exercise_lang,translate_mode,role,body_weight_kg,height_cm")
+            .select(
+                "id,telegram_id,username,units,exercise_lang,translate_mode,role,"
+                "body_weight_kg,height_cm,train_freq_per_week,avg_duration_min"
+            )
             .eq("telegram_id", telegram_id)
             .limit(1)
             .execute()
@@ -491,6 +494,18 @@ class Db:
     def set_height(self, user_id: int, cm: Optional[int]) -> None:
         payload = {"height_cm": None if cm is None else int(cm)}
         self.client.table("users").update(payload).eq("id", int(user_id)).execute()
+
+    def update_user_body_weight(self, user_id: int, body_weight_kg: Optional[float]) -> None:
+        self.set_body_weight(user_id=int(user_id), kg=body_weight_kg)
+
+    def update_user_height(self, user_id: int, height_cm: Optional[int]) -> None:
+        self.set_height(user_id=int(user_id), cm=height_cm)
+
+    def update_user_freq(self, user_id: int, train_freq_per_week: int) -> None:
+        self.client.table("users").update({"train_freq_per_week": int(train_freq_per_week)}).eq("id", int(user_id)).execute()
+
+    def update_user_duration(self, user_id: int, avg_duration_min: int) -> None:
+        self.client.table("users").update({"avg_duration_min": int(avg_duration_min)}).eq("id", int(user_id)).execute()
 
     def update_exercise_name_ru(self, exercise_id: int, name_ru: str) -> None:
         self.client.table("exercises").update({"name_ru": (name_ru or "").strip()}).eq("id", exercise_id).execute()
@@ -1146,9 +1161,6 @@ class Db:
 
     def update_user_units(self, user_id: int, units: str) -> None:
         self.client.table("users").update({"units": units}).eq("id", user_id).execute()
-
-    def update_user_timezone(self, user_id: int, timezone_value: str) -> None:
-        self.client.table("users").update({"timezone": timezone_value}).eq("id", user_id).execute()
 
     def list_templates(self, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
         res = (

@@ -277,8 +277,10 @@ def repeat_options_kb() -> ReplyKeyboardMarkup:
 def settings_kb(*, is_admin: bool = False) -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton(text="⚖️ Вес тела")],
+        [KeyboardButton(text="📏 Рост")],
+        [KeyboardButton(text="📅 Частота")],
+        [KeyboardButton(text="⏱ Длительность")],
         [KeyboardButton(text="⚖️ Единицы")],
-        [KeyboardButton(text="🕒 Часовой пояс")],
         [KeyboardButton(text="🌐 Язык упражнений")],
     ]
     if is_admin:
@@ -343,7 +345,29 @@ def onboarding_height_kb() -> ReplyKeyboardMarkup:
 def body_weight_settings_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✏️ Изменить")],
+            [KeyboardButton(text="⏭️ Пропустить")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def train_freq_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
+            [KeyboardButton(text="4"), KeyboardButton(text="5"), KeyboardButton(text="6"), KeyboardButton(text="7")],
+            [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def duration_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="25"), KeyboardButton(text="45"), KeyboardButton(text="60")],
+            [KeyboardButton(text="90"), KeyboardButton(text="120")],
             [KeyboardButton(text="↩️ Назад"), KeyboardButton(text="↩️ В меню")],
         ],
         resize_keyboard=True,

@@ -81,12 +81,25 @@ async def character(message: Message, db):
 
         achievements = p.get("achievements", [])
         achievements_count = len(achievements) if isinstance(achievements, list) else 0
+        body_weight = user.get("body_weight_kg")
+        height = user.get("height_cm")
+        train_freq = user.get("train_freq_per_week")
+        avg_duration = user.get("avg_duration_min")
+
+        weight_text = f"{float(body_weight):g} кг" if body_weight is not None else texts.SETTINGS_WEIGHT_EMPTY
+        height_text = f"{int(height)} см" if height is not None else "не задан"
+        freq_text = f"{int(train_freq)}/нед" if train_freq is not None else "не задано"
+        duration_text = f"{int(avg_duration)} мин" if avg_duration is not None else "не задана"
 
         text = (
             "<b>Персонаж</b>\n"
             f"Уровень: <b>{lvl}</b>\n"
             f"XP: <b>{xp}/{xp_to_next}</b>\n"
             f"Достижений: <b>{achievements_count}</b>\n\n"
+            f"Вес: <b>{weight_text}</b>\n"
+            f"Рост: <b>{height_text}</b>\n"
+            f"Частота: <b>{freq_text}</b>\n"
+            f"Длительность: <b>{duration_text}</b>\n\n"
             "<b>Мышцы</b>\n"
             + "\n".join(muscle_lines)
         )
@@ -95,4 +108,3 @@ async def character(message: Message, db):
     except Exception:
         log.exception("character failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-
