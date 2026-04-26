@@ -43,10 +43,12 @@ class EditWorkoutStates(StatesGroup):
 
 class SettingsStates(StatesGroup):
     units_menu = State()
-    waiting_timezone = State()
     exercise_lang_menu = State()
     translate_mode_menu = State()
     waiting_body_weight = State()
+    waiting_height = State()
+    waiting_train_freq = State()
+    waiting_avg_duration = State()
 
 
 class OnboardingStates(StatesGroup):

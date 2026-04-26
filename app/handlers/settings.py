@@ -1,8 +1,6 @@
 import logging
-import re
 
 from aiogram import F, Router
-from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
@@ -11,10 +9,12 @@ from app.config import is_admin as is_admin_by_env
 from app.handlers.start import _parse_weight_kg
 from app.keyboards import (
     body_weight_settings_kb,
+    duration_kb,
     exercise_lang_kb,
     main_menu_kb,
     onboarding_weight_kb,
     settings_kb,
+    train_freq_kb,
     translate_mode_kb,
     units_kb,
 )
@@ -22,20 +22,18 @@ from app.states import SettingsStates
 
 log = logging.getLogger("handlers.settings")
 router = Router()
-TZ_RE = re.compile(r"^UTC[+-]\d{1,2}$")
 
 # Manual test-cases:
-# 1) ⚙️ Настройки -> ⚖️ Вес тела shows current value or "не указан".
-# 2) ⚖️ Вес тела -> ✏️ Изменить -> enter "95" -> save and return to settings.
+# 1) ⚙️ Настройки -> ⚖️ Вес тела -> enter "95" -> save and return to settings.
+# 2) ⚙️ Настройки -> 📏 Рост/📅 Частота/⏱ Длительность -> save -> return to settings.
 # 3) In weight edit press "⏭️ Пропустить" -> body_weight_kg becomes NULL and warning is shown.
 
 
 async def _render_settings(message: Message, db) -> None:
     user = db.get_or_create_user(message.from_user.id, message.from_user.username)
     units = user.get("units") or "kg"
-    timezone_value = user.get("timezone") or "UTC+0"
     await message.answer(
-        texts.SETTINGS_TEXT.format(units=units, timezone=timezone_value),
+        texts.SETTINGS_TEXT.format(units=units),
         reply_markup=settings_kb(is_admin=(db.is_admin(user) or is_admin_by_env(message.from_user.id))),
     )
 
@@ -43,26 +41,10 @@ async def _render_settings(message: Message, db) -> None:
 @router.message(F.text == "⚖️ Вес тела")
 async def open_body_weight_settings(message: Message, state: FSMContext, db):
     try:
-        await state.clear()
-        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        current = db.get_body_weight(user_id=int(user["id"]))
-        value = texts.SETTINGS_WEIGHT_EMPTY if current is None else f"{current:g} кг"
-        await message.answer(
-            texts.SETTINGS_WEIGHT_TITLE.format(value=value),
-            reply_markup=body_weight_settings_kb(),
-        )
+        await state.set_state(SettingsStates.waiting_body_weight)
+        await message.answer(texts.ONBOARDING_WEIGHT_PROMPT, reply_markup=body_weight_settings_kb())
     except Exception:
         log.exception("open_body_weight_settings failed")
-        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-
-
-@router.message(F.text == "✏️ Изменить")
-async def edit_body_weight(message: Message, state: FSMContext):
-    try:
-        await state.set_state(SettingsStates.waiting_body_weight)
-        await message.answer(texts.ONBOARDING_WEIGHT_PROMPT, reply_markup=onboarding_weight_kb())
-    except Exception:
-        log.exception("edit_body_weight failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
@@ -73,6 +55,31 @@ async def cancel_edit_body_weight(message: Message, state: FSMContext, db):
         await _render_settings(message, db)
     except Exception:
         log.exception("cancel_edit_body_weight failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(
+    SettingsStates.waiting_body_weight,
+    F.text == "↩️ Назад",
+)
+@router.message(
+    SettingsStates.waiting_height,
+    F.text == "↩️ Назад",
+)
+@router.message(
+    SettingsStates.waiting_train_freq,
+    F.text == "↩️ Назад",
+)
+@router.message(
+    SettingsStates.waiting_avg_duration,
+    F.text == "↩️ Назад",
+)
+async def back_from_profile_edit(message: Message, state: FSMContext, db):
+    try:
+        await state.clear()
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("back_from_profile_edit failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
@@ -94,15 +101,121 @@ async def save_body_weight(message: Message, state: FSMContext, db):
     try:
         weight = _parse_weight_kg(message.text or "")
         if weight is None:
-            await message.answer(texts.ERR_NUMBER + "\nДиапазон: 20..350 кг.", reply_markup=onboarding_weight_kb())
+            await message.answer(texts.ERR_NUMBER + "\nДиапазон: 20..350 кг.", reply_markup=body_weight_settings_kb())
             return
         user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        db.set_body_weight(user_id=int(user["id"]), kg=weight)
+        db.update_user_body_weight(user_id=int(user["id"]), body_weight_kg=weight)
         await state.clear()
         await message.answer(texts.SETTINGS_WEIGHT_UPDATED, reply_markup=main_menu_kb())
         await _render_settings(message, db)
     except Exception:
         log.exception("save_body_weight failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "📏 Рост")
+async def ask_height(message: Message, state: FSMContext):
+    try:
+        await state.set_state(SettingsStates.waiting_height)
+        await message.answer(texts.SETTINGS_HEIGHT_PROMPT, reply_markup=onboarding_weight_kb())
+    except Exception:
+        log.exception("ask_height failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.waiting_height, F.text == "⏭️ Пропустить")
+async def clear_height(message: Message, state: FSMContext, db):
+    try:
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.update_user_height(user_id=int(user["id"]), height_cm=None)
+        await state.clear()
+        await message.answer(texts.SETTINGS_HEIGHT_SKIPPED, reply_markup=main_menu_kb())
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("clear_height failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.waiting_height)
+async def save_height(message: Message, state: FSMContext, db):
+    try:
+        value = (message.text or "").strip()
+        if not value.isdigit():
+            await message.answer(texts.SETTINGS_HEIGHT_INVALID, reply_markup=onboarding_weight_kb())
+            return
+        parsed = int(value)
+        if parsed < 100 or parsed > 230:
+            await message.answer(texts.SETTINGS_HEIGHT_INVALID, reply_markup=onboarding_weight_kb())
+            return
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.update_user_height(user_id=int(user["id"]), height_cm=parsed)
+        await state.clear()
+        await message.answer(texts.SETTINGS_HEIGHT_UPDATED, reply_markup=main_menu_kb())
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("save_height failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "📅 Частота")
+async def ask_train_freq(message: Message, state: FSMContext):
+    try:
+        await state.set_state(SettingsStates.waiting_train_freq)
+        await message.answer(texts.SETTINGS_FREQ_PROMPT, reply_markup=train_freq_kb())
+    except Exception:
+        log.exception("ask_train_freq failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.waiting_train_freq)
+async def save_train_freq(message: Message, state: FSMContext, db):
+    try:
+        value = (message.text or "").strip()
+        if not value.isdigit():
+            await message.answer(texts.SETTINGS_FREQ_INVALID, reply_markup=train_freq_kb())
+            return
+        parsed = int(value)
+        if parsed < 1 or parsed > 7:
+            await message.answer(texts.SETTINGS_FREQ_INVALID, reply_markup=train_freq_kb())
+            return
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.update_user_freq(user_id=int(user["id"]), train_freq_per_week=parsed)
+        await state.clear()
+        await message.answer(texts.SETTINGS_FREQ_UPDATED, reply_markup=main_menu_kb())
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("save_train_freq failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(F.text == "⏱ Длительность")
+async def ask_avg_duration(message: Message, state: FSMContext):
+    try:
+        await state.set_state(SettingsStates.waiting_avg_duration)
+        await message.answer(texts.SETTINGS_DURATION_PROMPT, reply_markup=duration_kb())
+    except Exception:
+        log.exception("ask_avg_duration failed")
+        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
+
+
+@router.message(SettingsStates.waiting_avg_duration)
+async def save_avg_duration(message: Message, state: FSMContext, db):
+    try:
+        value = (message.text or "").strip()
+        if not value.isdigit():
+            await message.answer(texts.SETTINGS_DURATION_INVALID, reply_markup=duration_kb())
+            return
+        parsed = int(value)
+        if parsed not in {25, 45, 60, 90, 120}:
+            await message.answer(texts.SETTINGS_DURATION_INVALID, reply_markup=duration_kb())
+            return
+        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
+        db.update_user_duration(user_id=int(user["id"]), avg_duration_min=parsed)
+        await state.clear()
+        await message.answer(texts.SETTINGS_DURATION_UPDATED, reply_markup=main_menu_kb())
+        await _render_settings(message, db)
+    except Exception:
+        log.exception("save_avg_duration failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
 
 
@@ -218,31 +331,4 @@ async def set_units(message: Message, state: FSMContext, db):
         await _render_settings(message, db)
     except Exception:
         log.exception("set_units failed")
-        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-
-
-@router.message(F.text == "🕒 Часовой пояс")
-async def ask_timezone(message: Message, state: FSMContext):
-    try:
-        await state.set_state(SettingsStates.waiting_timezone)
-        await message.answer(texts.SETTINGS_TIMEZONE_PROMPT, reply_markup=main_menu_kb())
-    except Exception:
-        log.exception("ask_timezone failed")
-        await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
-
-
-@router.message(StateFilter(SettingsStates.waiting_timezone))
-async def save_timezone(message: Message, state: FSMContext, db):
-    try:
-        value = (message.text or "").strip()
-        if not TZ_RE.fullmatch(value):
-            await message.answer(texts.SETTINGS_TIMEZONE_INVALID, reply_markup=main_menu_kb())
-            return
-
-        user = db.get_or_create_user(message.from_user.id, message.from_user.username)
-        db.update_user_timezone(user_id=int(user["id"]), timezone_value=value)
-        await state.clear()
-        await _render_settings(message, db)
-    except Exception:
-        log.exception("save_timezone failed")
         await message.answer(texts.TECH_ERROR, reply_markup=main_menu_kb())
