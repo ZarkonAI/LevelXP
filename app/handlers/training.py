@@ -234,11 +234,12 @@ def _search_exercises(exercises: list[dict], query: str) -> list[dict]:
                 token_hits.append(enriched)
 
     token_hits.sort(key=lambda row: (-int(bool(row.get("is_featured"))), str(row.get("display_name") or row.get("name") or "").lower()))
-    if token_hits:
+    use_fuzzy = query_len >= 5 and len(token_hits) == 0
+    if token_hits or not use_fuzzy:
         return token_hits
 
     fuzzy_hits: list[dict] = []
-    threshold = 0.7 if query_len <= 3 else 0.62 if query_len <= 5 else 0.55
+    threshold = 0.65 if query_len <= 6 else 0.62
     for exercise in exercises:
         score = max(
             dice(normalized_query, str(exercise.get("name_ru") or "")),
