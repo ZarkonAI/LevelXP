@@ -35,21 +35,30 @@ ACHIEVEMENTS_META = {
 BASE_EXERCISES = [
     {
         "name": "Присед",
+        "name_ru": "Присед",
         "category": "strength",
         "primary_muscle": "legs",
         "muscle_map": {"legs": 0.7, "core": 0.2, "back": 0.1},
+        "weight_mode": "external",
+        "xp_mult": 1.0,
     },
     {
         "name": "Жим лёжа",
+        "name_ru": "Жим лёжа",
         "category": "strength",
         "primary_muscle": "chest",
         "muscle_map": {"chest": 0.6, "shoulders": 0.2, "arms": 0.2},
+        "weight_mode": "external",
+        "xp_mult": 1.0,
     },
     {
         "name": "Становая тяга",
+        "name_ru": "Становая тяга",
         "category": "strength",
         "primary_muscle": "back",
         "muscle_map": {"back": 0.5, "legs": 0.3, "core": 0.2},
+        "weight_mode": "external",
+        "xp_mult": 1.0,
     },
     {
         "name": "Подтягивания",
@@ -89,11 +98,22 @@ BASE_EXERCISES = [
     },
     {
         "name": "Жим стоя",
+        "name_ru": "Жим стоя",
         "category": "strength",
         "primary_muscle": "shoulders",
         "muscle_map": {"shoulders": 0.6, "arms": 0.2, "core": 0.2},
+        "weight_mode": "external",
+        "xp_mult": 1.0,
     },
-    {"name": "Планка", "category": "core", "primary_muscle": "core", "muscle_map": {"core": 1.0}},
+    {
+        "name": "Планка",
+        "name_ru": "Планка",
+        "category": "core",
+        "primary_muscle": "core",
+        "muscle_map": {"core": 1.0},
+        "weight_mode": "external",
+        "xp_mult": 1.0,
+    },
 ]
 
 
@@ -138,21 +158,41 @@ class Db:
             return name_ru
         return name_en or name_ru or "Упражнение"
 
+    @staticmethod
+    def _normalize_seed_exercise_row(row: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(row.get("name") or "").strip()
+        name_ru = str(row.get("name_ru") or "").strip() or name
+        category = str(row.get("category") or "").strip() or "strength"
+        primary_muscle = str(row.get("primary_muscle") or "").strip()
+        weight_mode = str(row.get("weight_mode") or "").strip() or "external"
+        xp_mult = float(row.get("xp_mult") or 1.0)
+        muscle_map = row.get("muscle_map") if isinstance(row.get("muscle_map"), dict) else {}
+        return {
+            "name": name,
+            "name_ru": name_ru,
+            "category": category,
+            "primary_muscle": primary_muscle,
+            "muscle_map": muscle_map,
+            "weight_mode": weight_mode,
+            "xp_mult": xp_mult,
+        }
+
     def seed_exercises_if_empty(self) -> None:
         """Idempotent seed: если упражнений нет — добавим базовые."""
         try:
             res = self.client.table("exercises").select("id,name,name_ru").limit(1000).execute()
             existing_rows = res.data or []
+            normalized_base_exercises = [self._normalize_seed_exercise_row(row) for row in BASE_EXERCISES]
             if not existing_rows:
-                self.client.table("exercises").insert(BASE_EXERCISES).execute()
+                self.client.table("exercises").insert(normalized_base_exercises).execute()
                 self._ex_cache = {"data": None, "expires_at": None}
-                log.info("Seeded base exercises: %s", len(BASE_EXERCISES))
+                log.info("Seeded %s exercises", len(normalized_base_exercises))
                 return
 
             existing_names = {str(row.get("name") or "").strip().lower() for row in existing_rows}
             existing_names_ru = {str(row.get("name_ru") or "").strip().lower() for row in existing_rows}
             missing_rows = []
-            for row in BASE_EXERCISES:
+            for row in normalized_base_exercises:
                 name = str(row.get("name") or "").strip().lower()
                 name_ru = str(row.get("name_ru") or "").strip().lower()
                 if name and name in existing_names:
@@ -163,7 +203,7 @@ class Db:
             if missing_rows:
                 self.client.table("exercises").insert(missing_rows).execute()
                 self._ex_cache = {"data": None, "expires_at": None}
-                log.info("Seeded missing base exercises: %s", len(missing_rows))
+                log.info("Seeded %s exercises", len(missing_rows))
         except Exception:
             log.exception("Failed to seed exercises")
 
